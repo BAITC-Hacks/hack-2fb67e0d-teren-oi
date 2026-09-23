@@ -108,6 +108,7 @@ export interface AnalysisResponse {
   function_mappings?: FunctionMapping[]
   ai_summary?: string | null
   report_markdown: string
+  source_files?: { before: string[]; after: string[] }
   source_names: { before: string; after: string }
   ai_error?: string | null
   warnings?: string[]

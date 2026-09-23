@@ -43,7 +43,7 @@ MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
 REPORTS = ReportStore()
 UNIT_PATTERN = re.compile(
     r"\b((?:Департамент|Управление|Отдел|Центр|Служба|Группа|Дирекция|"
-    r"ДЕПАРТАМЕНТ|УПРАВЛЕНИЕ|ОТДЕЛ|ЦЕНТР|СЛУЖБА|ГРУППА|ДИРЕКЦИЯ)\s+[^:;,.\n]{2,90})",
+    r"ДЕПАРТАМЕНТ|УПРАВЛЕНИЕ|ОТДЕЛ|ЦЕНТР|СЛУЖБА|ГРУППА|ДИРЕКЦИЯ)\s+[^:;,.\n→«»\"]{2,220})",
 )
 
 DEMO_BEFORE = """2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
@@ -199,10 +199,18 @@ async def _source_bundle(files: list[UploadFile], text: str | None, label: str, 
 
 
 def _unit_names(clause: Clause) -> set[str]:
-    return {
-        " ".join(match.group(1).split()).strip(" -–—")
-        for match in UNIT_PATTERN.finditer(clause.text)
-    }
+    names = set()
+    for match in UNIT_PATTERN.finditer(clause.text):
+        name = " ".join(match.group(1).split())
+        # Conservative local heuristic: responsibilities are not department names.
+        name = re.split(r"\s+(?:уже\s+)?(?:анализирует|анализируют|проверяет|проверяют|"
+                        r"контролирует|контролируют|готовит|готовят|осуществляет|осуществляют|"
+                        r"обеспечивает|обеспечивают|собирает|собирают|отвечает|отвечают|"
+                        r"переда[её]т|передают|выполняет|выполняют|вед[её]т|ведут)\b|\s*(?:→|->)",
+                        name, maxsplit=1, flags=re.IGNORECASE)[0].strip(" -–—«»\"")
+        if name and len(name) <= 180:
+            names.add(name)
+    return names
 
 
 def _units(comparison: Comparison) -> list[dict[str, object]]:
@@ -549,6 +557,8 @@ async def analyze(
         "function_mappings": mapping_payloads,
         "ai_summary": ai["summary"],
         "report_markdown": report_markdown,
+        "source_files": {"before": list(dict.fromkeys(c.source for c in old_document.clauses)),
+                         "after": list(dict.fromkeys(c.source for c in new_document.clauses))},
         "source_names": {"before": old_document.name, "after": new_document.name},
         "ai": ai,
         "coverage": coverage,

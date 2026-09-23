@@ -38,3 +38,13 @@ class DocumentBundleTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertEqual(response.json()["summary"]["modified"], 0)
         self.assertEqual(response.json()["summary"]["removed"], 2)
+
+    def test_unit_names_exclude_actions_and_arrows(self):
+        from teren_oi.models import Clause
+        cases = [
+            ("Департамент клиентской аналитики уже анализирует причины обращений", {"Департамент клиентской аналитики"}),
+            ("Департамент ДНМ → Департамент ДНМ", {"Департамент ДНМ"}),
+            ("Департамент ИТ-аудита и анализа данных (ДИТААД)»", {"Департамент ИТ-аудита и анализа данных (ДИТААД)"}),
+        ]
+        for text, expected in cases:
+            self.assertEqual(web._unit_names(Clause("1", text, "test", "1")), expected)

@@ -527,3 +527,21 @@ h1, h2, h3, h4, p { margin-top: 0; }
   .product-actions .button { flex: 1 1 160px; }
   .history-button { padding: 9px 12px; font-size: 12px; }
 }
+
+/* Rows must keep their natural height inside the scrollable department list. */
+.unit-list { gap: 8px; padding-right: 5px; scrollbar-gutter: stable; }
+.unit-item { display: grid; grid-template-columns: 27px minmax(0, 1fr); align-items: start; flex: 0 0 auto; padding: 12px 10px; }
+.unit-item__name { line-height: 1.5; }
+.unit-item > .badge { grid-column: 2; justify-self: start; margin: 0; white-space: nowrap; word-break: normal; overflow-wrap: normal; }
+.unit-item__arrow { display: none; }
+.document-comparison { display: grid; grid-template-columns: minmax(0, 1fr) 32px minmax(0, 1fr); gap: 12px; align-items: center; margin-bottom: 24px; }
+.document-comparison__side { min-width: 0; padding: 16px; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
+.document-comparison__side h3 { margin: 0 0 10px; font-size: 14px; }
+.document-comparison__side ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.document-comparison__side li { display: flex; gap: 8px; align-items: flex-start; font-size: 13px; overflow-wrap: anywhere; }
+.document-comparison__side svg { flex-shrink: 0; color: var(--accent); }
+.document-comparison__arrow { color: var(--accent); justify-self: center; }
+@media (max-width: 600px) {
+  .document-comparison { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+  .document-comparison__arrow { transform: rotate(90deg); }
+}

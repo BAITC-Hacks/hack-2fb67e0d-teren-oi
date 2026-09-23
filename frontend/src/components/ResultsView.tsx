@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { ArrowDownToLine, ChevronDown, CircleAlert, FileText, FileType2, FolderOpen, Layers3, Plus, ShieldCheck } from 'lucide-react'
+import { ArrowDownToLine, ArrowRight, ChevronDown, CircleAlert, FileText, FileType2, FolderOpen, Layers3, Plus, ShieldCheck } from 'lucide-react'
 import type { AnalysisResponse, ClauseChange, Finding, Unit } from '../types'
 import AiSummary, { aiStatusLabels } from './AiSummary'
 import SemanticAnalysis from './SemanticAnalysis'
@@ -198,9 +198,17 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
   return (
     <div className="results-view">
       <div className="results-header">
-        <div><span className="eyebrow"><span className="eyebrow__line" />СРАВНЕНИЕ ГОТОВО</span><h2>Аналитическое заключение</h2><p><strong>{result.source_names.before}</strong><span className="results-file-arrow"> → </span><strong>{result.source_names.after}</strong></p></div>
+        <div><span className="eyebrow"><span className="eyebrow__line" />СРАВНЕНИЕ ГОТОВО</span><h2>Аналитическое заключение</h2><p>Сравнение комплектов документов и ответственности подразделений</p></div>
         <button type="button" className="button button--secondary" onClick={onRestart}><Plus size={17} aria-hidden="true" />К документам</button>
       </div>
+      <section className="document-comparison" aria-label="Исходные документы до и после">
+        {(['before', 'after'] as const).map((side, index) => <div key={side} style={{ display: 'contents' }}>
+          {index === 1 && <ArrowRight className="document-comparison__arrow" size={24} aria-hidden="true" />}
+          <div className="document-comparison__side"><h3>{side === 'before' ? '01 · До изменений' : '02 · После изменений'}</h3>
+            <ul>{(result.source_files?.[side] || [result.source_names[side]]).map((name, i) => <li key={`${name}-${i}`}><FileText size={18} aria-hidden="true" /><span>{name}</span></li>)}</ul>
+          </div>
+        </div>)}
+      </section>
       <AiSummary result={result} onInspect={inspectFinding} />
       <div className="metric-grid">
         <MetricCard label="Изменено подразделений" value={result.summary.units_changed} tone="blue" footnote="Оценки ИИ / текстовые признаки" />
