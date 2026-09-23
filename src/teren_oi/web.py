@@ -98,14 +98,14 @@ async def request_validation_handler(_request: Request, _error: RequestValidatio
 
 def _text_document(text: str, name: str) -> SourceDocument:
     if len(text) > MAX_TEXT_CHARS:
-        raise ApiProblem(413, "TEXT_TOO_LARGE", "Текст превышает допустимый размер.")
+        raise ApiProblem(413, "TEXT_TOO_LARGE", "Текст превышает 500 000 символов. Разделите документ на части.")
     blocks = [
         TextBlock(line, f"line {number}")
         for number, line in enumerate(text.splitlines(), start=1)
         if line.strip()
     ]
     if not blocks:
-        raise ApiProblem(400, "EMPTY_DOCUMENT", f"В редакции «{name}» нет текста.")
+        raise ApiProblem(400, "EMPTY_DOCUMENT", f"В редакции «{name}» нет текста. Вставьте текст или выберите заполненный документ.")
     parsed = parse_blocks(blocks, name)
     if parsed.clauses:
         return parsed
@@ -149,7 +149,7 @@ async def _source_document(file: UploadFile | None, text: str | None, label: str
         raise ApiProblem(400, "UNSUPPORTED_FORMAT", "Поддерживаются DOCX, PDF, XLSX и TXT.")
     data = await file.read(MAX_UPLOAD_BYTES + 1)
     if len(data) > MAX_UPLOAD_BYTES:
-        raise ApiProblem(413, "FILE_TOO_LARGE", "Файл превышает 12 МБ.")
+        raise ApiProblem(413, "FILE_TOO_LARGE", "Файл превышает 12 МБ. Разделите документ на части или загрузите текстовую версию.")
     try:
         document = _with_fallback_clauses(await to_thread(read_document, data, name))
     except DocumentReadError as exc:
@@ -322,6 +322,8 @@ def _report_context(ai: dict, coverage: dict, summary: dict, warnings: list[str]
             f"В AI-проверку включено фрагментов: {selected['included_clauses']} из {selected['total_clauses']}; "
             f"пропущено: {selected['omitted_clauses']}; усечено: {selected['truncated_clauses']}.", "",
             "Сохранённый одинаковый текст учитывается один раз, изменённый — для каждой редакции.", "",
+            "Полный контекст для ИИ: до — " + ("да" if selected.get("before_complete") else "нет")
+            + "; после — " + ("да" if selected.get("after_complete") else "нет") + ".", "",
         ])
         for field, title in (("omitted_refs", "Не переданы"), ("truncated_refs", "Переданы частично")):
             if ai[field]:
@@ -334,7 +336,7 @@ def _report_context(ai: dict, coverage: dict, summary: dict, warnings: list[str]
 @app.get("/api/health")
 def health() -> dict[str, object]:
     return {
-        "ai_available": bool(os.getenv("OPENAI_API_KEY")),
+        "ai_available": bool(os.getenv("OPENAI_API_KEY", "").strip()),
         "model": MODEL,
         "supported_extensions": sorted(SUPPORTED_EXTENSIONS),
     }
@@ -385,7 +387,7 @@ async def analyze(
         "omitted_refs": [], "truncated_refs": [],
     }
     if use_ai:
-        if not os.getenv("OPENAI_API_KEY"):
+        if not os.getenv("OPENAI_API_KEY", "").strip():
             ai["status"] = "unavailable"
             ai["error"] = "Ключ OpenAI не настроен на сервере. Добавьте OPENAI_API_KEY в локальный .env и перезапустите API."
         else:
@@ -416,7 +418,7 @@ async def analyze(
                         "Модель не вернула выводов с проверяемыми цитатами. Это не подтверждает отсутствие рисков в документах."
                     )
                 if ai["rejected_findings"]:
-                    warnings.append(f"Не показаны выводы модели с неподтверждёнными или неоднозначными цитатами: {ai['rejected_findings']}.")
+                    warnings.append(f"Не показаны выводы модели, не прошедшие проверку цитат, редакций или полноты контекста: {ai['rejected_findings']}.")
     units = _units(comparison)
     duplicate_count = sum(item.kind == "потенциальное дублирование" for item in findings)
     loss_count = sum(item.kind == "потенциальная потеря функции" for item in findings)

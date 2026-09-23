@@ -63,7 +63,7 @@ export interface AiAnalysis {
   summary_origin: 'verified_findings' | null
   finding_ids: string[]
   error: string | null
-  coverage: { total_clauses: number; included_clauses: number; omitted_clauses: number; truncated_clauses: number }
+  coverage: { total_clauses: number; included_clauses: number; omitted_clauses: number; truncated_clauses: number; before_complete?: boolean; after_complete?: boolean }
   omitted_refs?: string[]
   truncated_refs?: string[]
   rejected_findings: number

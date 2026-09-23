@@ -25,7 +25,9 @@ export default function App() {
   const [useAi, setUseAi] = useState(false)
   const [result, setResult] = useState<AnalysisResponse | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [exportError, setExportError] = useState<string | null>(null)
   const [exporting, setExporting] = useState<'pdf' | 'docx' | null>(null)
+  const exportRequestId = useRef(0)
   const analysisPending = useRef(false)
   const reducedMotion = useReducedMotion()
 
@@ -100,6 +102,9 @@ export default function App() {
         demo,
       })
       setResult(data)
+      exportRequestId.current += 1
+      setExporting(null)
+      setExportError(null)
       setStep('results')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось выполнить анализ.')
@@ -111,11 +116,14 @@ export default function App() {
 
   const download = async (format: 'pdf' | 'docx') => {
     if (!result) return
+    const requestId = ++exportRequestId.current
     setExporting(format)
-    setError(null)
+    setExportError(null)
     try { await exportReport(result.analysis_id, format) }
-    catch (reason) { setError(reason instanceof Error ? reason.message : 'Не удалось скачать заключение.') }
-    finally { setExporting(null) }
+    catch (reason) {
+      if (exportRequestId.current === requestId) setExportError(reason instanceof Error ? reason.message : 'Не удалось скачать заключение.')
+    }
+    finally { if (exportRequestId.current === requestId) setExporting(null) }
   }
 
   const pageMotion = reducedMotion ? { initial: false as const, animate: { opacity: 1 }, exit: undefined } : {
@@ -152,7 +160,7 @@ export default function App() {
             </motion.div>}
             {step === 'analysis' && <motion.div key="analysis" {...pageMotion} transition={{ duration: 0.35 }}><AnalysisView useAi={useAi} model={health?.model} /></motion.div>}
           </AnimatePresence>
-          {result && <div hidden={step !== 'results'}><ResultsView key={result.analysis_id} result={result} onRestart={() => { setStep('import'); setError(null) }} onExport={(format) => void download(format)} exporting={exporting} /></div>}
+          {result && <div hidden={step !== 'results'}><ResultsView key={result.analysis_id} result={result} onRestart={() => { setStep('import'); setError(null) }} onExport={(format) => void download(format)} exporting={exporting} exportError={exportError} /></div>}
           <footer className="footer"><span>© {new Date().getFullYear()} Teren Oi</span><span>Анализ документов с опорой на исходные пункты</span></footer>
         </main>
       </div>

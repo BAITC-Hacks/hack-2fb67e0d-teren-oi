@@ -1,110 +1,267 @@
 from __future__ import annotations
 
 import unittest
-from collections import Counter
 
-from teren_oi.diff import compare_documents
-from teren_oi.models import Clause, SourceDocument
+from teren_oi.diff import compare_documents, validate_analysis_response
+from teren_oi.models import (
+    AnalysisResponse,
+    Citation,
+    Clause,
+    DepartmentChange,
+    Finding,
+    FunctionMapping,
+    SourceDocument,
+)
 
 
-def document(name: str, rows: list[tuple[str, str]]) -> SourceDocument:
-    return SourceDocument(
-        name,
-        tuple(Clause(clause_id, text, name, f"line {index}")
-              for index, (clause_id, text) in enumerate(rows, start=1)),
+def _comparison():
+    old = SourceDocument(
+        "old.txt",
+        (
+            Clause("1.1", "Отдел А проверяет обращения клиентов.", "old.txt", "1.1"),
+            Clause("1.2", "Отдел Б ведёт журнал обращений.", "old.txt", "1.2"),
+        ),
     )
+    new = SourceDocument(
+        "new.txt",
+        (
+            Clause("1.1", "Отдел А обрабатывает обращения клиентов.", "new.txt", "1.1"),
+            Clause("1.2", "Отдел Б ведёт журнал обращений.", "new.txt", "1.2"),
+            Clause("1.3", "Отдел В проверяет качество услуг.", "new.txt", "1.3"),
+        ),
+    )
+    return compare_documents(old, new)
 
 
-class DiffTests(unittest.TestCase):
-    def test_unique_renumbered_text_preserves_both_original_identifiers(self) -> None:
-        old = document("old.txt", [("1.1", "Проводит   аудит")])
-        new = document("new.txt", [("4.2", "проводит аудит")])
-
-        result = compare_documents(old, new)
-
-        self.assertEqual(len(result.unchanged), 1)
-        self.assertEqual(result.unchanged[0].before.clause_id, "1.1")
-        self.assertEqual(result.unchanged[0].after.clause_id, "4.2")
-        self.assertEqual(result.unchanged[0].clause_id, "4.2")
-        self.assertFalse(result.added or result.removed or result.modified)
-
-    def test_swapped_numbering_reserves_all_exact_matches_before_pairing_ids(self) -> None:
-        old = document("old.txt", [("1", "Аудит"), ("2", "Контроль")])
-        new = document("new.txt", [("1", "Контроль"), ("2", "Аудит")])
-
-        result = compare_documents(old, new)
-
-        self.assertEqual(len(result.unchanged), 2)
-        self.assertFalse(result.added or result.removed or result.modified)
-        self.assertEqual(
-            {(change.before.clause_id, change.after.clause_id) for change in result.unchanged},
-            {("1", "2"), ("2", "1")},
+class CitationValidationTests(unittest.TestCase):
+    def test_fabricated_citation_is_rejected(self) -> None:
+        comparison = _comparison()
+        result = AnalysisResponse(
+            summary="ignored",
+            department_changes=[],
+            function_mappings=[],
+            findings=[Finding(
+                kind="possible_loss",
+                title="Проверка",
+                explanation="Проверка",
+                confidence="medium",
+                citations=[
+                    Citation(document_label="до", clause_id="9.9", quote="выдуманная цитата")
+                ],
+            )],
         )
 
-    def test_duplicate_ids_reordered_with_repeated_text_match_exact_content_first(self) -> None:
-        old = document("old.txt", [("1", "Аудит"), ("1", "Контроль"), ("1", "Аудит")])
-        new = document("new.txt", [("1", "Контроль"), ("1", "Аудит"), ("1", "Аудит")])
-
-        result = compare_documents(old, new)
-
-        self.assertEqual(len(result.unchanged), 3)
-        self.assertFalse(result.added or result.removed or result.modified)
-
-    def test_repeated_text_does_not_infer_ambiguous_cross_id_matches(self) -> None:
-        old = document("old.txt", [("1", "Аудит"), ("2", "Аудит")])
-        new = document("new.txt", [("3", "Аудит"), ("4", "Аудит")])
-
-        result = compare_documents(old, new)
-
-        self.assertEqual(len(result.removed), 2)
-        self.assertEqual(len(result.added), 2)
-        self.assertFalse(result.unchanged or result.modified)
-
-    def test_same_id_anchor_does_not_make_repeated_text_globally_unique(self) -> None:
-        old = document("old.txt", [("1", "Аудит"), ("2", "Аудит")])
-        new = document("new.txt", [("1", "Аудит"), ("3", "Аудит")])
-
-        result = compare_documents(old, new)
-
-        self.assertEqual(len(result.unchanged), 1)
-        self.assertEqual(result.removed[0].clause_id, "2")
-        self.assertEqual(result.added[0].clause_id, "3")
-
-    def test_duplicate_ids_keep_exact_match_then_pair_remaining_occurrences(self) -> None:
-        old = document("old.txt", [("1", "Аудит"), ("1", "Контроль"), ("1", "Архив")])
-        new = document("new.txt", [("1", "Контроль"), ("1", "Новый аудит")])
-
-        result = compare_documents(old, new)
-
-        self.assertEqual(result.unchanged[0].before.text, "Контроль")
-        self.assertEqual(result.modified[0].before.text, "Аудит")
-        self.assertEqual(result.modified[0].after.text, "Новый аудит")
-        self.assertEqual(result.removed[0].before.text, "Архив")
-
-    def test_preserves_every_occurrence_without_synthetic_id_collisions(self) -> None:
-        old = document("old.txt", [("1", "А"), ("1", "Б"), ("1#2", "В"), ("2", "Г")])
-        new = document("new.txt", [("1", "Б"), ("3", "А"), ("1#2", "В2"), ("4", "Д")])
-
-        result = compare_documents(old, new)
-        changes = result.added + result.removed + result.modified + result.unchanged
-
-        self.assertEqual(
-            Counter(id(change.before) for change in changes if change.before is not None),
-            Counter(id(clause) for clause in old.clauses),
-        )
-        self.assertEqual(
-            Counter(id(change.after) for change in changes if change.after is not None),
-            Counter(id(clause) for clause in new.clauses),
+        validated = validate_analysis_response(
+            result, comparison, before_complete=True, after_complete=True
         )
 
-    def test_empty_text_does_not_prove_renumbering(self) -> None:
-        result = compare_documents(
-            document("old.txt", [("1", "")]), document("new.txt", [("2", " ")]),
+        self.assertEqual(validated.findings, [])
+
+    def test_valid_exact_citation_survives(self) -> None:
+        comparison = _comparison()
+        result = AnalysisResponse(
+            summary="ignored",
+            department_changes=[],
+            function_mappings=[],
+            findings=[Finding(
+                kind="possible_loss",
+                title="Проверка функции",
+                explanation="Требуется проверить перенос обязанности.",
+                confidence="low",
+                citations=[Citation(
+                    document_label="до",
+                    clause_id="1.1",
+                    quote="проверяет обращения клиентов",
+                )],
+            )],
         )
 
-        self.assertEqual(len(result.removed), 1)
-        self.assertEqual(len(result.added), 1)
-        self.assertFalse(result.unchanged)
+        validated = validate_analysis_response(
+            result, comparison, before_complete=True, after_complete=True
+        )
+
+        self.assertEqual(len(validated.findings), 1)
+        self.assertEqual(validated.findings[0].kind, "possible_loss")
+
+    def test_source_valid_but_unsupplied_citation_is_rejected(self) -> None:
+        comparison = _comparison()
+        result = AnalysisResponse(
+            summary="ignored",
+            department_changes=[],
+            function_mappings=[],
+            findings=[Finding(
+                kind="possible_loss",
+                title="Проверка функции",
+                explanation="Требуется проверить перенос обязанности.",
+                confidence="low",
+                citations=[Citation(
+                    document_label="до",
+                    clause_id="1.2",
+                    quote="Отдел Б ведёт журнал обращений",
+                )],
+            )],
+        )
+
+        validated = validate_analysis_response(
+            result,
+            comparison,
+            before_complete=True,
+            after_complete=True,
+            allowed_evidence=[("до", "1.1", "Отдел А проверяет обращения клиентов.")],
+        )
+
+        self.assertEqual(validated.findings, [])
+
+    def test_created_and_retained_departments_are_representable(self) -> None:
+        created = DepartmentChange(
+            name_before=None,
+            name_after="Департамент В",
+            status="created",
+            citations=[Citation(
+                document_label="после", clause_id="1.3", quote="Отдел В проверяет качество услуг"
+            )],
+        )
+        retained = DepartmentChange(
+            name_before="Отдел Б",
+            name_after="Отдел Б",
+            status="retained",
+            citations=[
+                Citation(document_label="до", clause_id="1.2", quote="Отдел Б ведёт журнал"),
+                Citation(document_label="после", clause_id="1.2", quote="Отдел Б ведёт журнал"),
+            ],
+        )
+
+        self.assertEqual(created.status, "created")
+        self.assertEqual(retained.status, "retained")
+
+    def test_created_department_requires_complete_old_context(self) -> None:
+        comparison = _comparison()
+        result = AnalysisResponse(
+            summary="ignored",
+            department_changes=[DepartmentChange(
+                name_before=None,
+                name_after="Отдел В",
+                status="created",
+                citations=[Citation(
+                    document_label="после",
+                    clause_id="1.3",
+                    quote="Отдел В проверяет качество услуг",
+                )],
+            )],
+            function_mappings=[],
+            findings=[],
+        )
+
+        incomplete = validate_analysis_response(result, comparison, after_complete=True)
+        complete = validate_analysis_response(
+            result, comparison, before_complete=True, after_complete=True
+        )
+
+        self.assertEqual(incomplete.department_changes, [])
+        self.assertEqual(len(complete.department_changes), 1)
+
+    def test_removed_department_requires_complete_after_context(self) -> None:
+        comparison = _comparison()
+        result = AnalysisResponse(
+            summary="ignored",
+            department_changes=[DepartmentChange(
+                name_before="Отдел А",
+                name_after=None,
+                status="removed",
+                citations=[Citation(
+                    document_label="до", clause_id="1.1", quote="Отдел А проверяет обращения"
+                )],
+            )],
+            function_mappings=[],
+            findings=[],
+        )
+
+        incomplete = validate_analysis_response(result, comparison, before_complete=True)
+        complete = validate_analysis_response(
+            result, comparison, before_complete=True, after_complete=True
+        )
+
+        self.assertEqual(incomplete.department_changes, [])
+        self.assertEqual(len(complete.department_changes), 1)
+
+    def test_lost_function_mapping_is_representable_but_needs_complete_after(self) -> None:
+        comparison = _comparison()
+        mapping = FunctionMapping(
+            old_function="Проверяет обращения клиентов",
+            new_function=None,
+            old_department="Отдел А",
+            new_department=None,
+            status="lost",
+            confidence="medium",
+            citations=[Citation(
+                document_label="до", clause_id="1.1", quote="проверяет обращения клиентов"
+            )],
+        )
+        result = AnalysisResponse(
+            summary="ignored",
+            department_changes=[],
+            function_mappings=[mapping],
+            findings=[],
+        )
+
+        incomplete = validate_analysis_response(result, comparison, before_complete=True)
+        complete = validate_analysis_response(
+            result, comparison, before_complete=True, after_complete=True
+        )
+
+        self.assertEqual(incomplete.function_mappings, [])
+        self.assertEqual(complete.function_mappings[0].status, "lost")
+
+    def test_possible_duplication_and_conflict_need_two_after_citations(self) -> None:
+        comparison = _comparison()
+        result = AnalysisResponse(
+            summary="ignored",
+            department_changes=[],
+            function_mappings=[],
+            findings=[
+                Finding(
+                    kind="possible_duplication",
+                    title="Недостаточно источников",
+                    explanation="Есть только один пункт.",
+                    confidence="low",
+                    citations=[Citation(
+                        document_label="после",
+                        clause_id="1.1",
+                        quote="Отдел А обрабатывает обращения",
+                    )],
+                ),
+                Finding(
+                    kind="possible_conflict",
+                    title="Пересечение обязанностей",
+                    explanation="Оба отдела описаны в новой редакции.",
+                    confidence="medium",
+                    citations=[
+                        Citation(
+                            document_label="после",
+                            clause_id="1.1",
+                            quote="Отдел А обрабатывает обращения клиентов",
+                        ),
+                        Citation(
+                            document_label="после",
+                            clause_id="1.3",
+                            quote="Отдел В проверяет качество услуг",
+                        ),
+                    ],
+                ),
+            ],
+        )
+
+        validated = validate_analysis_response(result, comparison, after_complete=True)
+
+        self.assertEqual([item.kind for item in validated.findings], ["possible_conflict"])
+
+    def test_compare_documents_still_separates_added_modified_and_unchanged(self) -> None:
+        comparison = _comparison()
+
+        self.assertEqual([item.clause_id for item in comparison.unchanged], ["1.2"])
+        self.assertEqual([item.clause_id for item in comparison.modified], ["1.1"])
+        self.assertEqual([item.clause_id for item in comparison.added], ["1.3"])
+        self.assertEqual(comparison.removed, ())
 
 
 if __name__ == "__main__":

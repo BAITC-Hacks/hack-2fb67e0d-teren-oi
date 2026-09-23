@@ -6,8 +6,10 @@ from io import BytesIO
 from pathlib import Path
 from typing import Any
 from zipfile import BadZipFile
+from xml.etree.ElementTree import ParseError
 
 import pymupdf
+from lxml.etree import XMLSyntaxError
 from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
@@ -23,7 +25,7 @@ def _validate_input(data: bytes, name: str, extension: str) -> None:
     if Path(name).suffix.lower() != extension:
         raise DocumentReadError(f"Файл «{name}» не имеет расширение {extension}.")
     if not data:
-        raise DocumentReadError(f"Файл «{name}» пустой.")
+        raise DocumentReadError(f"Файл «{name}» пустой. Выберите документ с текстом.")
 
 
 def read_pdf(data: bytes, name: str) -> SourceDocument:
@@ -127,7 +129,7 @@ def read_xlsx(data: bytes, name: str) -> SourceDocument:
             for row in sheet.iter_rows()
             for block in _xlsx_row_blocks(sheet, row)
         ]
-    except (BadZipFile, InvalidFileException, KeyError, ValueError, OSError) as exc:
+    except (BadZipFile, InvalidFileException, XMLSyntaxError, ParseError, KeyError, ValueError, OSError) as exc:
         raise DocumentReadError(
             f"Не удалось прочитать «{name}». Проверьте, что файл является корректным XLSX."
         ) from exc

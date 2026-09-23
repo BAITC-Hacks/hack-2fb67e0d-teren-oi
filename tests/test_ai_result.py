@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import unittest
+import json
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -25,6 +26,51 @@ def finding(quote: str, *, clause_id: str = "1", label: str = "после") -> F
 
 
 class AiResultTests(unittest.TestCase):
+    def test_renumbered_unchanged_text_exposes_only_its_real_before_alias(self) -> None:
+        comparison = compare_documents(
+            document("before", ("1", "Проверяет отчёт"), ("2", "Собирает данные")),
+            document("after", ("3", "Проверяет отчёт"), ("2", "Анализирует данные")),
+        )
+        response = AnalysisResponse(findings=[
+            finding("Проверяет отчёт", clause_id="1", label="до"),
+            finding("Проверяет отчёт", clause_id="3", label="до"),
+        ])
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "unit-test-placeholder"}), \
+                patch.object(analyzer, "OpenAI") as client:
+            client.return_value.responses.parse.return_value = SimpleNamespace(output_parsed=response)
+            result = analyzer.analyze_with_metadata(comparison, "test-model")
+            payload = json.loads(client.return_value.responses.parse.call_args.kwargs["input"][1]["content"])
+        retained = next(item for item in payload["clauses"] if item["status"] == "без изменений")
+        self.assertEqual(retained["clause_id"], "3")
+        self.assertEqual(retained["aliases"], [{"document_label": "до", "clause_id": "1"}])
+        self.assertEqual(payload["context_complete"], {"до": True, "после": True})
+        self.assertEqual(result.coverage["included_clauses"], 3)
+        self.assertEqual(result.rejected_findings, 1)
+        self.assertEqual(result.findings[0].citations[0].clause_id, "1")
+
+    def test_normalized_unchanged_text_never_aliases_different_literal_source(self) -> None:
+        comparison = compare_documents(
+            document("before", ("1", "Проверяет отчёт"), ("2", "Собирает данные")),
+            document("after", ("1", "ПРОВЕРЯЕТ ОТЧЁТ"), ("2", "Анализирует данные")),
+        )
+        response = AnalysisResponse(findings=[finding("Проверяет отчёт", label="до")])
+        with patch.dict("os.environ", {"OPENAI_API_KEY": "unit-test-placeholder"}), \
+                patch.object(analyzer, "OpenAI") as client:
+            client.return_value.responses.parse.return_value = SimpleNamespace(output_parsed=response)
+            result = analyzer.analyze_with_metadata(comparison, "test-model")
+            payload = json.loads(client.return_value.responses.parse.call_args.kwargs["input"][1]["content"])
+        retained = next(item for item in payload["clauses"] if item["status"] == "без изменений")
+        self.assertEqual(retained["aliases"], [])
+        self.assertEqual(payload["context_complete"], {"до": False, "после": True})
+        self.assertFalse(result.coverage["before_complete"])
+        self.assertTrue(result.coverage["after_complete"])
+        self.assertEqual(result.coverage["omitted_clauses"], 0)
+        self.assertEqual(analyzer.evidence_omissions(comparison)["omitted_refs"], [
+            "до · пункт 1 (исходный вариант текста не передан)",
+        ])
+        self.assertEqual(result.findings, [])
+        self.assertEqual(result.rejected_findings, 1)
+
     def test_success_has_real_call_and_never_exposes_unvalidated_summary(self) -> None:
         comparison = compare_documents(
             document("before", ("1", "Собирает данные"), ("2", "Проверяет отчёт")),
@@ -43,6 +89,7 @@ class AiResultTests(unittest.TestCase):
         self.assertEqual(result.coverage, {
             "total_clauses": 3, "included_clauses": 3,
             "omitted_clauses": 0, "truncated_clauses": 0,
+            "before_complete": True, "after_complete": True,
         })
         self.assertFalse(hasattr(result, "summary"))
         client.assert_called_once_with(timeout=60.0, max_retries=0)
@@ -57,6 +104,8 @@ class AiResultTests(unittest.TestCase):
         self.assertFalse(result.called)
         self.assertEqual(result.coverage["included_clauses"], 0)
         self.assertEqual(result.coverage["omitted_clauses"], 1)
+        self.assertFalse(result.coverage["before_complete"])
+        self.assertFalse(result.coverage["after_complete"])
 
     def test_repeated_id_requires_unambiguous_full_source_occurrence(self) -> None:
         comparison = compare_documents(
@@ -83,6 +132,8 @@ class AiResultTests(unittest.TestCase):
         self.assertGreater(coverage["omitted_clauses"], 0)
         self.assertEqual(coverage["included_clauses"] + coverage["omitted_clauses"], 40)
         self.assertEqual(coverage["truncated_clauses"], coverage["included_clauses"])
+        self.assertTrue(coverage["before_complete"])
+        self.assertFalse(coverage["after_complete"])
         self.assertLessEqual(sum(len(item[3]) for item in analyzer._evidence(comparison)), 32_000)
         self.assertEqual(analyzer.evidence_coverage(comparison)["included_clauses"], 0)
 

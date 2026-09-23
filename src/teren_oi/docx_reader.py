@@ -3,6 +3,8 @@ from __future__ import annotations
 from io import BytesIO
 from zipfile import BadZipFile
 
+from lxml.etree import XMLSyntaxError
+
 from docx import Document
 from docx.opc.exceptions import PackageNotFoundError
 from docx.table import Table
@@ -71,11 +73,11 @@ def read_docx(data: bytes, name: str) -> SourceDocument:
     if not name.lower().endswith(".docx"):
         raise DocumentReadError(f"Файл «{name}» не имеет расширение .docx.")
     if not data:
-        raise DocumentReadError(f"Файл «{name}» пустой.")
+        raise DocumentReadError(f"Файл «{name}» пустой. Выберите документ с текстом.")
     try:
         document = Document(BytesIO(data))
         blocks = list(_iter_text_blocks(document))
-    except (BadZipFile, PackageNotFoundError, KeyError, ValueError, OSError) as exc:
+    except (BadZipFile, PackageNotFoundError, XMLSyntaxError, KeyError, ValueError, OSError) as exc:
         raise DocumentReadError(
             f"Не удалось прочитать «{name}». Проверьте, что это DOCX, а не переименованный PDF."
         ) from exc

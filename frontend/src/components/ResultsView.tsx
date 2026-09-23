@@ -76,7 +76,8 @@ function MappingTable({ changes, units, activeUnit }: { changes: ClauseChange[];
       const container = tableRef.current
       const row = container?.querySelector<HTMLElement>(`[data-row-index="${firstNewIndex}"]`)
       if (!container || !row) return
-      const top = row.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop
+      const headerHeight = container.querySelector('thead')?.getBoundingClientRect().height || 0
+      const top = Math.max(0, row.getBoundingClientRect().top - container.getBoundingClientRect().top + container.scrollTop - headerHeight)
       container.scrollTo({ top, behavior: reducedMotion ? 'auto' : 'smooth' })
     })
     revealFrom.current = null
@@ -147,11 +148,12 @@ function FindingCard({ finding, index, expanded, onToggle }: { finding: Finding;
   )
 }
 
-export default function ResultsView({ result, onRestart, onExport, exporting }: {
+export default function ResultsView({ result, onRestart, onExport, exporting, exportError }: {
   result: AnalysisResponse
   onRestart: () => void
   onExport: (format: 'pdf' | 'docx') => void
   exporting: 'pdf' | 'docx' | null
+  exportError: string | null
 }) {
   const [activeUnit, setActiveUnit] = useState<string | null>(null)
   const [visibleFindings, setVisibleFindings] = useState(8)
@@ -211,6 +213,7 @@ export default function ResultsView({ result, onRestart, onExport, exporting }: 
           <button type="button" className="button button--light" disabled={exporting !== null} onClick={() => onExport('pdf')}><FileType2 size={17} aria-hidden="true" />{exporting === 'pdf' ? 'Готовим PDF…' : 'Скачать PDF'}</button>
           <button type="button" className="button button--outline-light" disabled={exporting !== null} onClick={() => onExport('docx')}><FileText size={17} aria-hidden="true" />{exporting === 'docx' ? 'Готовим Word…' : 'Скачать Word'}</button>
         </div>
+        {exportError && <div className="export-error" role="alert"><CircleAlert size={18} aria-hidden="true" /><span>{exportError}</span></div>}
       </section>
       <section className="coverage-panel surface" id="coverage" aria-labelledby="coverage-heading">
         <div className="section-heading"><div><span className="eyebrow">ПРЕДЕЛЫ ПРОВЕРКИ</span><h3 id="coverage-heading">Охват и ограничения</h3></div><ShieldCheck size={20} aria-hidden="true" /></div>

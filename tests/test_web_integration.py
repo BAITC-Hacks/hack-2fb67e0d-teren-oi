@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import unittest
+from io import BytesIO
+from zipfile import ZipFile
 from unittest.mock import patch
 
+from docx import Document
 from fastapi.testclient import TestClient
 
 from teren_oi.analyzer import AnalysisError, AnalysisResult
@@ -133,6 +136,22 @@ class WebIntegrationTests(unittest.TestCase):
         self.assertEqual(duplicate["summary"]["removed"], 2)
         self.assertEqual(duplicate["findings"], [])
         self.assertTrue(any("неоднознач" in warning for warning in duplicate["warnings"]))
+
+    def test_corrupt_docx_xml_is_a_readable_input_error(self) -> None:
+        original = BytesIO()
+        document = Document()
+        document.add_paragraph("1.1 Проверяет отчёт")
+        document.save(original)
+        broken = BytesIO()
+        with ZipFile(original) as source, ZipFile(broken, "w") as target:
+            for item in source.infolist():
+                target.writestr(item.filename, b"<broken" if item.filename == "word/document.xml" else source.read(item))
+        response = self.client.post("/api/analyze", files={
+            "before_file": ("broken.docx", broken.getvalue()),
+        }, data={"after_text": "1.1 Проверяет отчёт"})
+        self.assertEqual(response.status_code, 400)
+        self.assertEqual(response.json()["error"]["code"], "DOCUMENT_READ_ERROR")
+        self.assertIn("Проверьте", response.json()["error"]["message"])
 
 
 if __name__ == "__main__":

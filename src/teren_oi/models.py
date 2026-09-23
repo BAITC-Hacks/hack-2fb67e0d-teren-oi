@@ -38,24 +38,61 @@ class Comparison:
     unchanged: tuple[Change, ...]
 
 
+DocumentLabel = Literal["до", "после"]
+Confidence = Literal["low", "medium", "high", "низкая", "средняя", "высокая"]
+DepartmentStatus = Literal["created", "retained", "reorganized", "removed"]
+FunctionStatus = Literal["retained", "changed", "reassigned", "lost"]
+FindingKind = Literal[
+    "possible_loss",
+    "possible_duplication",
+    "possible_conflict",
+    # Legacy kinds keep the existing web and report adapters compatible.
+    "потенциальная потеря функции",
+    "потенциальное дублирование",
+    "перераспределение ответственности",
+    "другое изменение",
+    "потенциальный конфликт интересов",
+]
+
+
 class Citation(BaseModel):
-    document_label: Literal["до", "после"] = Field(description="Точная метка document_label цитируемого фрагмента.")
-    clause_id: str = Field(description="Скопируй clause_id цитируемого фрагмента, например 2.4; не порядковый номер записи.")
+    document_label: DocumentLabel = Field(description="Точная метка document_label цитируемого фрагмента или его explicit alias.")
+    clause_id: str = Field(min_length=1, description="Скопируй clause_id того же фрагмента/alias, например 2.4; не порядковый номер записи.")
     quote: str = Field(min_length=1, description="Непрерывная дословная подстрока text из того же фрагмента. Без своих кавычек, номера и многоточий.")
 
 
+class DepartmentChange(BaseModel):
+    name_before: str | None = Field(default=None, min_length=1)
+    name_after: str | None = Field(default=None, min_length=1)
+    status: DepartmentStatus
+    citations: list[Citation] = Field(min_length=1)
+
+
+class FunctionMapping(BaseModel):
+    old_function: str = Field(min_length=1)
+    new_function: str | None = Field(default=None, min_length=1)
+    old_department: str | None = Field(default=None, min_length=1)
+    new_department: str | None = Field(default=None, min_length=1)
+    status: FunctionStatus
+    confidence: Confidence
+    citations: list[Citation] = Field(min_length=1)
+
+
 class Finding(BaseModel):
-    kind: Literal["потенциальная потеря функции", "потенциальное дублирование",
-                  "перераспределение ответственности", "другое изменение"]
+    kind: FindingKind
     title: str = Field(min_length=1)
     explanation: str = Field(min_length=1)
-    confidence: Literal["низкая", "средняя", "высокая"]
+    confidence: Confidence
     citations: list[Citation] = Field(min_length=1)
 
 
 class AnalysisResponse(BaseModel):
-    summary: str
-    findings: list[Finding]
+    # Empty/default structured sections keep the established summary/findings
+    # constructors valid; the server replaces the unverified model summary.
+    summary: str = Field(default_factory=str)
+    department_changes: list[DepartmentChange] = Field(default_factory=list)
+    function_mappings: list[FunctionMapping] = Field(default_factory=list)
+    findings: list[Finding] = Field(default_factory=list)
 
 
 def to_dict(value: object) -> dict:

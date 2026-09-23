@@ -21,7 +21,8 @@ export default function AiSummary({ result, onInspect }: { result: AnalysisRespo
   const succeeded = ai.status === 'succeeded'
   const highlights = ai.finding_ids.map((id) => result.findings.find((finding) => finding.id === id && finding.origin === 'ai')).filter((finding) => finding !== undefined).slice(0, 3)
   const unnumberedOmissions = result.coverage.before.unnumbered_blocks + result.coverage.after.unnumbered_blocks
-  const partial = ai.coverage.omitted_clauses > 0 || ai.coverage.truncated_clauses > 0 || unnumberedOmissions > 0
+  const partial = ai.coverage.omitted_clauses > 0 || ai.coverage.truncated_clauses > 0 || unnumberedOmissions > 0 || ai.coverage.before_complete === false || ai.coverage.after_complete === false
+  const completeness = (value?: boolean) => value === undefined ? 'не определено' : value ? 'да' : 'нет'
 
   return (
     <section className={`ai-summary ${succeeded ? '' : 'ai-summary--inactive'}`} aria-labelledby="ai-summary-heading">
@@ -48,7 +49,9 @@ export default function AiSummary({ result, onInspect }: { result: AnalysisRespo
             {partial && '. Выводы относятся только к переданному тексту.'}
           </p>
           <p className="ai-summary__provenance">Одинаковый текст в обеих редакциях учитывается один раз; для изменённых пунктов учитываются обе версии.</p>
-          {ai.rejected_findings > 0 && <p className="ai-summary__provenance">Не показано выводов без подтверждённых источников: {ai.rejected_findings}.</p>}
+          <p className="ai-summary__provenance">Полный контекст для ИИ: до — {completeness(ai.coverage.before_complete)}, после — {completeness(ai.coverage.after_complete)}.</p>
+          {(ai.coverage.before_complete === false || ai.coverage.after_complete === false) && <p className="ai-summary__provenance">Совпадение лишь по регистру или пробелам не даёт дословной цитаты старой редакции. Для таких пунктов проверьте обе версии в карте изменений.</p>}
+          {ai.rejected_findings > 0 && <p className="ai-summary__provenance">Не прошли проверку цитат, редакций или охвата: {ai.rejected_findings}.</p>}
         </>}
       </div>
     </section>
