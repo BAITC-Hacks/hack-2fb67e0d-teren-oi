@@ -496,3 +496,38 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .semantic-evidence summary { cursor: pointer; min-height: 44px; display: list-item; padding: 10px 0; }
 .semantic-evidence blockquote { margin: 8px 0; padding: 12px; border-left: 3px solid #2563eb; overflow-wrap: anywhere; }
 @media (max-width: 480px) { .semantic-panel { padding: 16px; } }
+
+/* Workspace tools reuse the app's light/dark tokens. */
+.product-panel { padding: 24px; margin: 18px 0; min-width: 0; }
+.product-panel h2, .product-panel h3, .archive-card h3 { margin: 4px 0 10px; overflow-wrap: anywhere; }
+.product-field { display: flex; flex-direction: column; gap: 8px; font-size: 13px; font-weight: 600; min-width: 0; margin: 12px 0; }
+.product-field input, .product-field select, .product-field textarea { width: 100%; min-width: 0; min-height: 44px; border: 1px solid var(--border-strong); border-radius: 9px; background: var(--surface); color: var(--text); padding: 11px 12px; font: inherit; font-weight: 400; }
+.product-field textarea { resize: vertical; }
+.product-field :is(input, select, textarea):focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.product-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 14px 0; align-items: center; }
+.product-actions .button { white-space: normal; text-align: center; overflow-wrap: anywhere; }
+.import-actions .panel-intro { margin-right: auto; }
+.product-notice { padding: 16px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--accent-soft); color: var(--text); overflow-wrap: anywhere; }
+.review-progress { width: 100%; height: 8px; accent-color: var(--accent); }
+.review-editor { border-block: 1px solid var(--border); margin: 16px 0; padding: 4px 0; }
+.review-editor summary { cursor: pointer; min-height: 44px; padding: 12px 0; color: var(--accent); font-size: 13px; font-weight: 600; }
+.review-editor summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.search-panel { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; gap: 16px; align-items: end; }
+.search-panel .button { margin-bottom: 12px; }
+.archive-list { display: grid; gap: 16px; margin-top: 22px; }
+.archive-card { border: 1px solid var(--border); background: var(--surface-alt); border-radius: 12px; padding: 20px; min-width: 0; }
+.archive-card .panel-intro { overflow-wrap: anywhere; }
+.archive-preview { white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 13px; max-height: 400px; overflow: auto; }
+.history-button { min-height: 44px; }
+@media (max-width: 900px) {
+  .topbar { height: auto; min-height: 70px; padding-block: 10px; }
+  .topbar__trail { display: none; }
+  .topbar__actions { flex-wrap: wrap; flex-shrink: 1; min-width: 0; width: 100%; }
+}
+@media (max-width: 720px) {
+  .product-panel, .archive-card { padding: 16px; }
+  .search-panel { grid-template-columns: 1fr; gap: 0; }
+  .product-field input, .product-field select, .product-field textarea { font-size: 16px; }
+  .product-actions .button { flex: 1 1 160px; }
+  .history-button { padding: 9px 12px; font-size: 12px; }
+}

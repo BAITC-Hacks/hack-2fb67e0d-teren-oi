@@ -5,6 +5,8 @@ import { ArrowDownToLine, ChevronDown, CircleAlert, FileText, FileType2, FolderO
 import type { AnalysisResponse, ClauseChange, Finding, Unit } from '../types'
 import AiSummary, { aiStatusLabels } from './AiSummary'
 import SemanticAnalysis from './SemanticAnalysis'
+import { changesCsv, downloadText, matchesQuery, reviewedReport, reviewLabels } from '../workspace'
+import type { Archive, Review, Reviews, ReviewStatus } from '../workspace'
 
 const statusLabels: Record<string, string> = {
   added: 'Добавлено', removed: 'Удалено', modified: 'Изменено', unchanged: 'Без изменений',
@@ -58,7 +60,7 @@ function UnitsPanel({ units, active, onSelect }: { units: Unit[]; active: string
     </section>
   )
 }
-function MappingTable({ changes, units, activeUnit }: { changes: ClauseChange[]; units: Unit[]; activeUnit: string | null }) {
+function MappingTable({ changes, units, activeUnit, query }: { changes: ClauseChange[]; units: Unit[]; activeUnit: string | null; query: string }) {
   const [filter, setFilter] = useState('all')
   const [expanded, setExpanded] = useState<string | null>(null)
   const [visibleCount, setVisibleCount] = useState(40)
@@ -69,7 +71,7 @@ function MappingTable({ changes, units, activeUnit }: { changes: ClauseChange[];
     setVisibleCount(40)
     setExpanded(null)
     revealFrom.current = null
-  }, [filter, activeUnit])
+  }, [filter, activeUnit, query])
   useEffect(() => {
     if (revealFrom.current === null) return
     const firstNewIndex = revealFrom.current
@@ -86,7 +88,7 @@ function MappingTable({ changes, units, activeUnit }: { changes: ClauseChange[];
   }, [visibleCount, reducedMotion])
   const selectedUnit = units.find((unit) => unit.name === activeUnit)
   const visible = changes.filter((change) =>
-    (filter === 'all' || change.status === filter) && (!selectedUnit || selectedUnit.change_ids.includes(change.id)),
+    (filter === 'all' || change.status === filter) && (!selectedUnit || selectedUnit.change_ids.includes(change.id)) && matchesQuery(change, query),
   )
   const shown = visible.slice(0, visibleCount)
   const filters = [
@@ -125,7 +127,7 @@ function MappingTable({ changes, units, activeUnit }: { changes: ClauseChange[];
   )
 }
 
-function FindingCard({ finding, index, expanded, onToggle }: { finding: Finding; index: number; expanded: boolean; onToggle: () => void }) {
+function FindingCard({ finding, index, expanded, onToggle, review, onReview }: { finding: Finding; index: number; expanded: boolean; onToggle: () => void; review: Review; onReview: (review: Review) => void }) {
   const reducedMotion = useReducedMotion()
   const tone = findingTone(finding.kind)
   return (
@@ -133,6 +135,7 @@ function FindingCard({ finding, index, expanded, onToggle }: { finding: Finding;
       <div className="finding-card__top"><span className={`finding-icon finding-icon--${tone}`}><CircleAlert size={19} aria-hidden="true" /></span><Badge tone={tone}>{finding.origin === 'local' && finding.kind === 'потенциальная потеря функции' ? 'Удалённый пункт' : finding.kind}</Badge><span className="finding-card__index">{String(index + 1).padStart(2, '0')}</span></div>
       <span className="finding-origin">{finding.origin === 'ai' ? 'Вывод ИИ · цитаты проверены' : 'Локальное сравнение · требует оценки эксперта'}</span>
       <h4>{finding.title}</h4>
+
       <p>{finding.explanation}</p>
       <button type="button" className="evidence-toggle" aria-expanded={expanded} aria-controls={`finding-evidence-${finding.id}`} onClick={onToggle}>
         <span>{expanded ? 'Скрыть источники' : 'Показать источники'} <span className="evidence-count">{finding.citations?.length || 0}</span></span><ChevronDown size={17} className={expanded ? 'rotated' : ''} aria-hidden="true" />
@@ -145,17 +148,34 @@ function FindingCard({ finding, index, expanded, onToggle }: { finding: Finding;
           </blockquote>) : <p className="no-evidence">Цитаты для этого вывода не предоставлены.</p>}
         </motion.div>}
       </AnimatePresence>
+      <details className="review-editor"><summary>Рецензия эксперта · {reviewLabels[review.status]}</summary>
+        <label className="product-field">Оценка эксперта<select value={review.status} onChange={event => onReview({...review, status: event.target.value as ReviewStatus})}>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        <label className="product-field">Комментарий<textarea rows={2} maxLength={2000} value={review.note} onChange={event => onReview({...review, note: event.target.value})} placeholder="Решение, ответственный или вопрос для уточнения" /></label>
+      </details>
     </article>
   )
 }
 
-export default function ResultsView({ result, onRestart, onExport, exporting, exportError }: {
+export default function ResultsView({ result, onRestart, onExport, exporting, exportError, onSave }: {
   result: AnalysisResponse
+  onSave: (archive: Archive) => void
   onRestart: () => void
   onExport: (format: 'pdf' | 'docx') => void
   exporting: 'pdf' | 'docx' | null
   exportError: string | null
 }) {
+  const [query, setQuery] = useState('')
+  const [reviewFilter, setReviewFilter] = useState('all')
+  const [reviews, setReviews] = useState<Reviews>({})
+  const [title, setTitle] = useState(() => `${result.source_names.before} → ${result.source_names.after}`.slice(0, 160))
+  const reviewedCount = result.findings.filter(f => reviews[f.id] && reviews[f.id].status !== 'pending').length
+  const filteredFindings = result.findings.filter(f => matchesQuery(f, query) && (reviewFilter === 'all' || (reviews[f.id]?.status || 'pending') === reviewFilter))
+  const save = () => onSave({
+    id: result.analysis_id, title: title.trim() || 'Сравнение документов', savedAt: new Date().toISOString(),
+    before: result.source_names.before, after: result.source_names.after, aiStatus: result.ai.status,
+    changes: result.summary.added + result.summary.removed + result.summary.modified,
+    reviewed: reviewedCount, total: result.findings.length, markdown: reviewedReport(result, reviews),
+  })
   const [activeUnit, setActiveUnit] = useState<string | null>(null)
   const [visibleFindings, setVisibleFindings] = useState(8)
   const [expandedFindingId, setExpandedFindingId] = useState<string | null>(null)
@@ -165,6 +185,7 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
   const inspectFinding = (id: string) => {
     const index = result.findings.findIndex((finding) => finding.id === id)
     if (index < 0) return
+    setQuery(''); setReviewFilter('all')
     setVisibleFindings((count) => Math.max(count, index + 1))
     setExpandedFindingId(id)
     setScrollTarget(id)
@@ -194,20 +215,38 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
         <MetricCard label="Удалённые пункты" value={result.summary.removed} tone="green" footnote="Точное сравнение · не потеря функции" />
         <MetricCard label="Переформулировано" value={result.summary.modified} tone="blue" footnote="Сопоставленных пунктов" />
       </div>
+      <section className="surface product-panel" aria-label="Инструменты эксперта">
+        <div className="section-heading"><div><span className="eyebrow">ЭКСПЕРТНАЯ ПРОВЕРКА</span><h3>От анализа к решению</h3></div><span className="count-pill">{reviewedCount} / {result.findings.length}</span></div>
+        <p className="panel-intro">Отмечайте решения в карточках замечаний. Оценки эксперта не меняют выводы ИИ и исходные показатели. Чтобы сохранить заметки после закрытия страницы, сохраните заключение в историю или скачайте Markdown с рецензией.</p>
+        <progress className="review-progress" aria-label="Рассмотрено замечаний" max={Math.max(1, result.findings.length)} value={reviewedCount} />
+        <label className="product-field">Название сравнения<input maxLength={160} value={title} onChange={event => setTitle(event.target.value)} /></label>
+        <div className="product-actions">
+          <button className="button button--primary" onClick={save}>Сохранить в историю</button>
+          <button className="button button--secondary" onClick={() => downloadText(reviewedReport(result, reviews), 'teren-oi-review.md')}>Markdown с рецензией</button>
+          <button className="button button--secondary" onClick={() => downloadText(changesCsv(result.changes), 'teren-oi-mapping.csv', 'text/csv;charset=utf-8')}>Вся карта в CSV</button>
+        </div>
+        <p className="field-hint">История сохраняет текст заключения и цитаты в этом браузере только по нажатию кнопки. PDF/Word с рецензией доступны из истории.</p>
+      </section>
       <nav className="results-nav" aria-label="Разделы заключения"><a href="#findings">Замечания <span>{result.findings.length}</span></a><a href="#mapping">Карта изменений</a><a href="#export">Скачать отчёт</a><a href="#coverage">Охват и ограничения</a></nav>
+      <section className="surface product-panel search-panel" aria-label="Поиск по сравнению">
+        <label className="product-field">Поиск по замечаниям и точной карте<input type="search" value={query} onChange={event => { setQuery(event.target.value); setVisibleFindings(8) }} placeholder="Функция, цитата, номер пункта…" /></label>
+        <label className="product-field">Статус проверки замечаний<select value={reviewFilter} onChange={event => { setReviewFilter(event.target.value); setVisibleFindings(8) }}><option value="all">Все замечания</option>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+        {(query || reviewFilter !== 'all') && <button className="button button--secondary" onClick={() => {setQuery(''); setReviewFilter('all')}}>Сбросить поиск</button>}
+      </section>
       <section className="findings-section" id="findings" aria-labelledby="findings-heading">
         <div className="section-heading"><div><span className="eyebrow">ВЫВОДЫ И ИСТОЧНИКИ</span><h3 id="findings-heading">Точки внимания</h3></div><span className="count-pill">{result.findings.length}</span></div>
         <p className="panel-intro">Выводов ИИ: {aiCount}. Локальных замечаний: {result.findings.length - aiCount}. Откройте источник для проверки. Удалённый пункт сам по себе не доказывает потерю функции.</p>
         {result.findings.length ? <>
-          <div className="findings-grid">{result.findings.slice(0, visibleFindings).map((finding, index) => <FindingCard key={finding.id} finding={finding} index={index} expanded={expandedFindingId === finding.id} onToggle={() => setExpandedFindingId(expandedFindingId === finding.id ? null : finding.id)} />)}</div>
-          <p className="panel-intro" role="status" aria-live="polite">Показано {Math.min(visibleFindings, result.findings.length)} из {result.findings.length} замечаний.</p>
-          {visibleFindings < result.findings.length && <button type="button" className="button button--secondary" onClick={() => setVisibleFindings((count) => count + 8)}>Показать ещё</button>}
+          {!filteredFindings.length && <div className="empty-state">По этим условиям замечаний нет. Измените запрос или сбросьте поиск.</div>}
+          <div className="findings-grid">{filteredFindings.slice(0, visibleFindings).map((finding, index) => <FindingCard key={finding.id} finding={finding} index={index} review={reviews[finding.id] || {status: 'pending', note: ''}} onReview={review => setReviews(current => ({...current, [finding.id]: review}))} expanded={expandedFindingId === finding.id} onToggle={() => setExpandedFindingId(expandedFindingId === finding.id ? null : finding.id)} />)}</div>
+          <p className="panel-intro" role="status" aria-live="polite">Показано {Math.min(visibleFindings, filteredFindings.length)} из {filteredFindings.length} замечаний по фильтру.</p>
+          {visibleFindings < filteredFindings.length && <button type="button" className="button button--secondary" onClick={() => setVisibleFindings((count) => count + 8)}>Показать ещё</button>}
         </> : <div className="all-clear"><FileText size={23} aria-hidden="true" /><div><strong>Замечаний с источниками нет</strong><span>Это не гарантирует отсутствие рисков. Проверьте карту изменений и охват анализа ниже.</span></div></div>}
       </section>
       <SemanticAnalysis result={result} />
       <div className="results-layout">
         <UnitsPanel units={result.units} active={activeUnit} onSelect={setActiveUnit} />
-        <MappingTable changes={result.changes} units={result.units} activeUnit={activeUnit} />
+        <MappingTable changes={result.changes} units={result.units} activeUnit={activeUnit} query={query} />
       </div>
       <section className="export-panel" id="export" aria-labelledby="export-heading">
         <div className="export-panel__icon"><ArrowDownToLine size={22} aria-hidden="true" /></div>
@@ -229,7 +268,7 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
         </details>}
         {result.warnings?.map((warning, index) => <div className="ai-warning" key={`${warning}-${index}`}><CircleAlert size={18} aria-hidden="true" /><span>{warning}</span></div>)}
         <p className="panel-intro">Точное совпадение текста помогает заметить перенос пункта. Смысловая перенумерация, разделение и объединение функций могут требовать ручной проверки. Наличие точной цитаты подтверждает источник, но не доказывает вывод модели.</p>
-        <p className="panel-intro">Выгрузите отчёт после проверки: результат хранится на сервере до часа и может стать недоступен после его перезапуска.</p>
+        <p className="panel-intro">Исходный отчёт хранится на сервере до часа. Для доступа после перезапуска сохраните заключение в локальную историю или скачайте Markdown. Кнопки PDF/Word выше выгружают исходный анализ без пользовательской рецензии.</p>
       </section>
     </div>
   )

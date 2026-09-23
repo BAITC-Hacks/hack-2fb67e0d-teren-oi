@@ -106,8 +106,10 @@ function DocumentInput({
 }
 
 
-export default function ImportView({ documents, acceptedExtensions, health, connected, useAi, onAiChange: setUseAi, onFile: updateFile, onRemove: removeFile, onText: updateText, onAnalyze: runAnalysis }: {
+export default function ImportView({ documents, acceptedExtensions, health, connected, useAi, onAiChange: setUseAi, onFile: updateFile, onRemove: removeFile, onText: updateText, onAnalyze: runAnalysis, onSwap, onClear }: {
   documents: Documents
+  onSwap: () => void
+  onClear: () => void
   acceptedExtensions: string[]
   health: HealthResponse | null
   connected: boolean
@@ -125,6 +127,7 @@ export default function ImportView({ documents, acceptedExtensions, health, conn
   return <>
               <div className="section-title-row"><div><span className="eyebrow">ШАГ 01 / ИСХОДНЫЕ ДАННЫЕ</span><h2>Добавьте документы для сравнения</h2><p>Word, PDF с текстовым слоем, Excel или TXT, до 12 МБ на файл.</p></div></div>
               <div className="demo-callout"><div><strong>Посмотрите, как это работает</strong><p>Демо за один клик: две редакции, изменения и цитаты. Выбранный ниже режим ИИ применяется и к демо.</p></div><button type="button" className="demo-button" onClick={() => void runAnalysis(true)}><Sparkles size={18} aria-hidden="true" /><span>Загрузить контрольный демо-комплект Казахтелеком</span><ArrowRight size={17} aria-hidden="true" /></button></div>
+              <div className="product-actions import-actions"><span className="panel-intro">Слева — старая редакция, справа — новая.</span><button className="button button--secondary" onClick={onSwap} disabled={Boolean((documents.before.file && !documents.before.ready) || (documents.after.file && !documents.after.ready))}>Поменять редакции местами</button><button className="button button--secondary" onClick={onClear}>Очистить ввод</button></div>
               <div className="document-grid">
                 <DocumentInput side="before" number="01" title="До изменений" subtitle="Исходная редакция документа" value={documents.before} accept={acceptedExtensions.join(',')} onFile={updateFile} onRemove={removeFile} onText={updateText} />
                 <DocumentInput side="after" number="02" title="После изменений" subtitle="Новая редакция документа" value={documents.after} accept={acceptedExtensions.join(',')} onFile={updateFile} onRemove={removeFile} onText={updateText} />

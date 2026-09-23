@@ -8,6 +8,9 @@ import ImportView from './components/ImportView'
 import type { Documents, UploadedDocument } from './components/ImportView'
 import ResultsView from './components/ResultsView'
 import Stepper from './components/Stepper'
+import HistoryPanel from './components/HistoryPanel'
+import { readArchives, writeArchives } from './workspace'
+import type { Archive } from './workspace'
 
 type Theme = 'light' | 'dark'
 const emptyDocument = (): UploadedDocument => ({ file: null, text: '', progress: 0, ready: false })
@@ -17,7 +20,11 @@ function extensionOf(filename: string): string {
 }
 
 export default function App() {
-  const [theme, setTheme] = useState<Theme>(() => localStorage.getItem('teren-oi-theme') === 'dark' ? 'dark' : 'light')
+  const [theme, setTheme] = useState<Theme>(() => { try { return localStorage.getItem('teren-oi-theme') === 'dark' ? 'dark' : 'light' } catch { return 'light' } })
+  const [archives, setArchives] = useState<Archive[]>(readArchives)
+  const [showHistory, setShowHistory] = useState(false)
+  const [deletedArchive, setDeletedArchive] = useState<Archive | null>(null)
+  const [archiveMessage, setArchiveMessage] = useState<string | null>(null)
   const [step, setStep] = useState<Step>('import')
   const [documents, setDocuments] = useState<Documents>({ before: emptyDocument(), after: emptyDocument() })
   const [health, setHealth] = useState<HealthResponse | null>(null)
@@ -31,7 +38,13 @@ export default function App() {
   const analysisPending = useRef(false)
   const reducedMotion = useReducedMotion()
 
-  useEffect(() => { document.documentElement.dataset.theme = theme; localStorage.setItem('teren-oi-theme', theme) }, [theme])
+  useEffect(() => {
+    const syncHistory = () => setArchives(readArchives())
+    window.addEventListener('storage', syncHistory)
+    return () => window.removeEventListener('storage', syncHistory)
+  }, [])
+
+  useEffect(() => { document.documentElement.dataset.theme = theme; try { localStorage.setItem('teren-oi-theme', theme) } catch { /* Theme still works when storage is unavailable. */ } }, [theme])
   useEffect(() => {
     const controller = new AbortController()
     getHealth(controller.signal).then((data) => { setHealth(data); setConnected(true) }).catch(() => setConnected(false))
@@ -79,6 +92,27 @@ export default function App() {
   const updateText = (side: DocumentSide, text: string) => setDocuments((current) => ({ ...current, [side]: { ...current[side], text } }))
   const refreshHealth = () => getHealth().then((data) => { setHealth(data); setConnected(true) }).catch(() => setConnected(false))
 
+  const saveArchive = (item: Archive) => {
+    try {
+      const next = [item, ...readArchives().filter(previous => previous.id !== item.id)]
+      writeArchives(next); setArchives(next); setArchiveMessage('Сохранено в истории этого браузера. Повторное сохранение обновит эту запись.')
+    } catch (reason) { setArchiveMessage(reason instanceof Error ? reason.message : 'Не удалось сохранить.') }
+  }
+  const deleteArchive = (id: string) => {
+    try {
+      const current = readArchives()
+      const next = current.filter(item => item.id !== id)
+      writeArchives(next); setDeletedArchive(current.find(item => item.id === id) || null); setArchives(next)
+    } catch (reason) { setArchiveMessage(reason instanceof Error ? reason.message : 'Не удалось удалить.') }
+  }
+  const undoDelete = () => {
+    if (!deletedArchive) return
+    try {
+      const next = [deletedArchive, ...readArchives().filter(item => item.id !== deletedArchive.id)]
+      writeArchives(next); setArchives(next); setDeletedArchive(null)
+    } catch (reason) { setArchiveMessage(reason instanceof Error ? reason.message : 'Не удалось восстановить.') }
+  }
+
   const runAnalysis = async (demo: boolean) => {
     if (analysisPending.current) return
     setError(null)
@@ -102,6 +136,7 @@ export default function App() {
         demo,
       })
       setResult(data)
+      setArchiveMessage(null)
       exportRequestId.current += 1
       setExporting(null)
       setExportError(null)
@@ -146,21 +181,26 @@ export default function App() {
 
       <div className="workspace">
         <header className="topbar"><div className="topbar__trail">Рабочее пространство <span>/</span> <strong>Сравнение редакций</strong></div><div className="topbar__actions">
+          <button type="button" className="button button--secondary history-button" disabled={step === 'analysis'} aria-pressed={showHistory} onClick={() => { setShowHistory(!showHistory); setArchiveMessage(null) }}>{showHistory ? 'К сравнению' : `История (${archives.length})`}</button>
           <button type="button" className={`connection-pill ${connected ? 'is-connected' : ''}`} onClick={refreshHealth} title="Проверить соединение с API" aria-label={connected ? 'API подключён. Проверить снова' : 'API недоступен. Проверить снова'}><span />{connected ? 'API подключён' : 'API недоступен'}<RefreshCw size={13} /></button>
           <button type="button" className="theme-toggle" onClick={() => setTheme(theme === 'light' ? 'dark' : 'light')} aria-label={theme === 'light' ? 'Включить тёмную тему' : 'Включить светлую тему'} title={theme === 'light' ? 'Тёмная тема' : 'Светлая тема'}>{theme === 'light' ? <Moon size={18} /> : <Sun size={18} />}</button>
         </div></header>
 
         <main id="main-content" className="main-content" tabIndex={-1}>
-          {step === 'import' && <div className="page-intro"><div><span className="eyebrow"><span className="eyebrow__line" />AI-АССИСТЕНТ ДЛЯ АНАЛИЗА ДОКУМЕНТОВ</span><h1>Сравнение редакций<br /><span>с опорой на источники.</span></h1><p>Загрузите две версии положения. Teren Oi покажет, что изменилось в структуре и функциях, и приложит цитаты для проверки.</p></div><div className="intro-aside"><span className="intro-aside__icon"><Sparkles size={20} /></span><span>От документа<br />к ясному решению</span></div></div>}
+          {!showHistory && step === 'import' && <div className="page-intro"><div><span className="eyebrow"><span className="eyebrow__line" />AI-АССИСТЕНТ ДЛЯ АНАЛИЗА ДОКУМЕНТОВ</span><h1>Сравнение редакций<br /><span>с опорой на источники.</span></h1><p>Загрузите две версии положения. Teren Oi покажет, что изменилось в структуре и функциях, и приложит цитаты для проверки.</p></div><div className="intro-aside"><span className="intro-aside__icon"><Sparkles size={20} /></span><span>От документа<br />к ясному решению</span></div></div>}
+          {archiveMessage && <p className="product-notice" role="status">{archiveMessage}</p>}
+          {showHistory && <HistoryPanel items={archives} onDelete={deleteArchive} onUndo={undoDelete} canUndo={Boolean(deletedArchive)} />}
+          <div hidden={showHistory}>
           <Stepper step={step} hasResult={Boolean(result)} goTo={setStep} />
           {error && <div className="error-banner" role="alert"><CircleAlert size={18} /><span>{error}</span><button type="button" onClick={() => setError(null)} aria-label="Закрыть сообщение"><X size={16} /></button></div>}
           <AnimatePresence mode="wait">
             {step === 'import' && <motion.div key="import" {...pageMotion} transition={{ duration: 0.35 }}>
-              <ImportView documents={documents} acceptedExtensions={acceptedExtensions} health={health} connected={connected} useAi={useAi} onAiChange={setUseAi} onFile={updateFile} onRemove={removeFile} onText={updateText} onAnalyze={runAnalysis} />
+              <ImportView documents={documents} acceptedExtensions={acceptedExtensions} health={health} connected={connected} useAi={useAi} onAiChange={setUseAi} onFile={updateFile} onRemove={removeFile} onText={updateText} onAnalyze={runAnalysis} onSwap={() => setDocuments(current => ({before: current.after, after: current.before}))} onClear={() => setDocuments({before: emptyDocument(), after: emptyDocument()})} />
             </motion.div>}
             {step === 'analysis' && <motion.div key="analysis" {...pageMotion} transition={{ duration: 0.35 }}><AnalysisView useAi={useAi} model={health?.model} /></motion.div>}
           </AnimatePresence>
-          {result && <div hidden={step !== 'results'}><ResultsView key={result.analysis_id} result={result} onRestart={() => { setStep('import'); setError(null) }} onExport={(format) => void download(format)} exporting={exporting} exportError={exportError} /></div>}
+          {result && <div hidden={step !== 'results'}><ResultsView key={result.analysis_id} result={result} onSave={saveArchive} onRestart={() => { setStep('import'); setError(null) }} onExport={(format) => void download(format)} exporting={exporting} exportError={exportError} /></div>}
+          </div>
           <footer className="footer"><span>© {new Date().getFullYear()} Teren Oi</span><span>Анализ документов с опорой на исходные пункты</span></footer>
         </main>
       </div>

@@ -48,12 +48,20 @@ export async function analyze(input: AnalysisInput): Promise<AnalysisResponse> {
 }
 
 export async function exportReport(analysisId: string, format: 'pdf' | 'docx'): Promise<void> {
+  return downloadExport({ analysis_id: analysisId, format }, format)
+}
+
+export async function exportArchivedReport(markdown: string, format: 'pdf' | 'docx'): Promise<void> {
+  return downloadExport({ report_markdown: markdown, format }, format)
+}
+
+async function downloadExport(payload: object, format: 'pdf' | 'docx'): Promise<void> {
   let response: Response
   try {
     response = await fetch(`${baseUrl}/api/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ analysis_id: analysisId, format }),
+      body: JSON.stringify(payload),
     })
   } catch {
     throw new Error('Не удалось связаться с сервером экспорта.')
