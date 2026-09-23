@@ -162,10 +162,12 @@ export default function ResultsView({ result, aiUsed, onRestart, onExport, expor
         <div><span className="eyebrow"><span className="eyebrow__line" />АНАЛИЗ ЗАВЕРШЁН</span><h2>Аналитическое заключение</h2><p>Сравнение <strong>{result.source_names.before}</strong> и <strong>{result.source_names.after}</strong></p></div>
         <button type="button" className="button button--secondary" onClick={onRestart}><Plus size={17} />Новый анализ</button>
       </div>
+      {result.ai_error && <div className="ai-warning" role="status"><CircleAlert size={18} aria-hidden="true" /><span><strong>Локальное сравнение готово, но AI-проверка не завершилась.</strong> {result.ai_error}</span></div>}
+      {result.warnings?.map((warning, index) => <div className="ai-warning" role="status" key={`${warning}-${index}`}><CircleAlert size={18} aria-hidden="true" /><span>{warning}</span></div>)}
       <div className="metric-grid">
         <MetricCard label="Изменено подразделений" value={result.summary.units_changed} tone="blue" footnote="Структурные изменения" />
         <MetricCard label="Потенциальные потери" value={result.summary.loss_count} tone="red" footnote="Требуют проверки" />
-        <MetricCard label="Возможные дубли" value={result.summary.duplicate_count} tone="amber" footnote={aiUsed ? 'AI-проверка выполнена' : 'AI-проверка выключена'} />
+        <MetricCard label="Возможные дубли" value={result.summary.duplicate_count} tone="amber" footnote={aiUsed ? 'AI-проверка выполнена' : result.ai_error ? 'AI-проверка не завершилась' : 'AI-проверка выключена'} />
         <MetricCard label="Изменено пунктов" value={result.summary.modified} tone="green" footnote="В двух редакциях" />
       </div>
       <div className="results-layout">
@@ -179,7 +181,7 @@ export default function ResultsView({ result, aiUsed, onRestart, onExport, expor
           <div className="findings-grid">{result.findings.slice(0, visibleFindings).map((finding, index) => <FindingCard key={`${finding.kind}-${index}`} finding={finding} index={index} />)}</div>
           <p className="panel-intro" role="status" aria-live="polite">Показано {Math.min(visibleFindings, result.findings.length)} из {result.findings.length} выводов.</p>
           {visibleFindings < result.findings.length && <button type="button" className="button button--secondary" onClick={() => setVisibleFindings((count) => count + 8)}>Показать ещё</button>}
-        </> : <div className="all-clear"><CheckCircle2 size={21} /><div><strong>Структурных отклонений не найдено</strong><span>{aiUsed ? 'AI-проверка не сформировала выводов по этим документам.' : 'Удалённых пунктов нет; AI-проверка дублирования не запускалась.'}</span></div></div>}
+        </> : <div className="all-clear"><CheckCircle2 size={21} /><div><strong>Структурных отклонений не найдено</strong><span>{aiUsed ? 'AI-проверка не сформировала выводов по этим документам.' : result.ai_error ? 'Удалённых пунктов нет; AI-проверка не завершилась.' : 'Удалённых пунктов нет; AI-проверка дублирования не запускалась.'}</span></div></div>}
       </section>
       <section className="export-panel" id="export" aria-labelledby="export-heading">
         <div className="export-panel__icon"><ArrowDownToLine size={22} aria-hidden="true" /></div>

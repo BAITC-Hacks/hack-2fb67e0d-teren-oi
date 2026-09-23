@@ -7,6 +7,8 @@ from .models import Change, Citation, Clause, Comparison, Finding, to_dict
 
 LIMITATIONS = (
     "AI-выводы являются рекомендациями и требуют проверки человеком.",
+    "AI анализирует ограниченную выборку пунктов; длинные пункты могут быть усечены.",
+    "Автоматический сигнал об удалённом пункте не доказывает потерю функции: она могла быть перенесена.",
     "Детерминированное сравнение сопоставляет пункты по clause_id; перенумерация "
     "может выглядеть как удаление и добавление.",
     "OCR сканированных PDF не входит в MVP.",
@@ -76,7 +78,7 @@ def _executive_summary(comparison: Comparison, finding_count: int) -> str:
         f"Сопоставлено {len(comparison.old_document.clauses)} пунктов версии «до» и "
         f"{len(comparison.new_document.clauses)} пунктов версии «после»: "
         f"добавлено {len(comparison.added)}, удалено {len(comparison.removed)}, "
-        f"изменено {len(comparison.modified)}. Подтверждённых аналитических выводов: "
+        f"изменено {len(comparison.modified)}. Сигналов для проверки по источникам: "
         f"{finding_count}."
     )
 
@@ -156,7 +158,7 @@ def _append_findings(
             )
         lines.append("")
     if not rendered:
-        lines.extend(["Нет подтверждённых выводов по доступным источникам.", ""])
+        lines.extend(["Нет сигналов для проверки по доступным источникам.", ""])
 
 
 def report_as_markdown(
@@ -228,7 +230,7 @@ def report_as_markdown(
                     ]
                 )
     else:
-        lines.extend(["Нет подтверждённых аналитических выводов.", ""])
+        lines.extend(["Нет сигналов для проверки по доступным источникам.", ""])
 
     lines.extend(["## Limitations / Ограничения", ""])
     lines.extend(f"- {limitation}" for limitation in LIMITATIONS)

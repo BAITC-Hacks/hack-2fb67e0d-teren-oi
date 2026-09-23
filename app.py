@@ -3,7 +3,6 @@ from __future__ import annotations
 import os
 import re
 import sys
-from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
@@ -14,23 +13,21 @@ sys.path.insert(0, str(ROOT / "src"))
 
 from teren_oi.analyzer import AnalysisError, analyze_changes  # noqa: E402
 from teren_oi.diff import compare_documents  # noqa: E402
-from teren_oi.docx_reader import DocumentReadError, read_docx  # noqa: E402
+from teren_oi.docx_reader import DocumentReadError  # noqa: E402
 from teren_oi.models import Clause, Finding, SourceDocument  # noqa: E402
+from teren_oi.parsers import TextBlock, parse_blocks  # noqa: E402
+from teren_oi.readers import SUPPORTED_EXTENSIONS, read_document  # noqa: E402
 from teren_oi.report import report_as_json, report_as_markdown  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
-DEMO_BEFORE = """Положение о контроле качества обслуживания — учебный пример
-
-2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
+DEMO_BEFORE = """2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
 2.2 Центр контроля качества: выборочно проверяет записи разговоров, фиксирует нарушения стандарта и назначает срок исправления.
 2.3 Региональные подразделения: обрабатывают обращения клиентов, устраняют причину и закрывают заявку после подтверждения результата.
 2.4 Группа обратной связи: собирает отзывы после закрытия обращений и передаёт замечания ответственному подразделению.
 """
 
-DEMO_AFTER = """Положение о контроле качества обслуживания — учебный пример
-
-2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
+DEMO_AFTER = """2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
 2.3 Региональные подразделения: обрабатывают обращения клиентов и устраняют причину; закрытие заявки выполняется после проверки результата.
 2.4 Департамент клиентского опыта: анализирует обращения и отзывы клиентов, готовит сводный отчёт и предлагает улучшения сервиса.
 2.5 Группа обратной связи: собирает отзывы после закрытия обращений и передаёт замечания ответственному подразделению.
@@ -40,8 +37,8 @@ DEMO_NOTICE = (
     "Демо-комплект синтетический: это иллюстративный сценарий для проверки интерфейса, "
     "а не официальные документы или сведения АО «Казахтелеком»."
 )
+UPLOAD_TYPES = sorted(extension.lstrip(".") for extension in SUPPORTED_EXTENSIONS)
 
-CLAUSE_RE = re.compile(r"^\s*(\d+(?:\.\d+){0,7})(?:[.)])?\s+(.+?)\s*$")
 UNIT_RE = re.compile(
     r"\b((?:департамент|управление|отдел|центр|служба|группа|дирекция)\s+[^:;,.\n]{2,90})",
     re.IGNORECASE,
@@ -52,55 +49,54 @@ class InputError(ValueError):
     """A supported file could not be converted into comparable document text."""
 
 
+def comparable_document(document: SourceDocument) -> SourceDocument:
+    """Give unnumbered-only text transparent IDs without inventing source positions."""
+    if document.clauses:
+        return document
+    if not document.unnumbered_blocks:
+        raise InputError(f"В «{document.name}» нет текста для сравнения.")
+    clauses = tuple(
+        Clause(
+            f"Блок {number}",
+            text,
+            document.name,
+            f"ненумерованный фрагмент {number}; точная позиция недоступна",
+        )
+        for number, text in enumerate(document.unnumbered_blocks, start=1)
+    )
+    return SourceDocument(document.name, clauses)
+
+
 def source_from_text(text: str, name: str) -> SourceDocument:
-    """Convert pasted text or extracted PDF/TXT text to the shared domain model."""
-    lines = [line.strip() for line in text.replace("\r", "").splitlines() if line.strip()]
-    clauses: list[Clause] = []
-    unnumbered: list[str] = []
-    for line_number, line in enumerate(lines, start=1):
-        match = CLAUSE_RE.match(line)
-        if match:
-            clauses.append(Clause(match.group(1), match.group(2).strip(), name, f"строка {line_number}"))
-        elif clauses:
-            last = clauses[-1]
-            clauses[-1] = Clause(last.clause_id, f"{last.text} {line}", last.source, last.location)
-        else:
-            unnumbered.append(line)
-    if not clauses:
-        blocks = [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
-        clauses = [Clause(f"Текст {index}", block, name, f"блок {index}")
-                   for index, block in enumerate(blocks, start=1)]
-    if not clauses:
-        raise InputError(f"В «{name}» нет текста для сравнения.")
-    return SourceDocument(name, tuple(clauses), tuple(unnumbered))
+    """Parse pasted text with the same clause rules used by uploaded files."""
+    blocks = [
+        TextBlock(line, f"line {number}")
+        for number, line in enumerate(text.splitlines(), start=1)
+        if line.strip()
+    ]
+    return comparable_document(parse_blocks(blocks, name))
 
 
 def read_uploaded(uploaded_file) -> SourceDocument:
-    name = uploaded_file.name
-    data = uploaded_file.getvalue()
-    suffix = Path(name).suffix.lower()
-    if suffix == ".docx":
-        return read_docx(data, name)
-    if suffix == ".txt":
-        try:
-            text = data.decode("utf-8-sig")
-        except UnicodeDecodeError as exc:
-            raise InputError(f"«{name}»: TXT ожидается в кодировке UTF-8.") from exc
-        return source_from_text(text, name)
-    if suffix == ".pdf":
-        try:
-            from pypdf import PdfReader
-        except ImportError as exc:
-            raise InputError("Для чтения PDF установите зависимость pypdf (pip install pypdf).") from exc
-        try:
-            reader = PdfReader(BytesIO(data))
-            text = "\n".join(page.extract_text() or "" for page in reader.pages)
-        except Exception as exc:
-            raise InputError(f"Не удалось извлечь текст из PDF «{name}».") from exc
-        if not text.strip():
-            raise InputError(f"В «{name}» не найден текст. Для сканированного PDF потребуется OCR.")
-        return source_from_text(text, name)
-    raise InputError("Поддерживаются DOCX, PDF и TXT.")
+    return comparable_document(read_document(uploaded_file.getvalue(), uploaded_file.name))
+
+
+def source_rows(document: SourceDocument) -> list[dict[str, str]]:
+    """Present extracted clauses alongside their exact available source locations."""
+    return [
+        {"Пункт": clause.clause_id, "Текст": clause.text,
+         "Источник": clause.source, "Место": clause.location}
+        for clause in document.clauses
+    ]
+
+
+def citation_source(comparison, citation) -> str:
+    document = (comparison.old_document if citation.document_label == "до"
+                else comparison.new_document)
+    for clause in document.clauses:
+        if clause.clause_id == citation.clause_id and citation.quote in clause.text:
+            return f"{clause.source} · {clause.location}"
+    return "точное местоположение не найдено"
 
 
 def render_unit_cards(comparison) -> None:
@@ -215,7 +211,7 @@ with st.sidebar:
         st.caption("Точный diff работает без ключа. Добавьте OPENAI_API_KEY в .env для AI-выводов.")
     st.divider()
     st.markdown("**Как работает**")
-    st.caption("Сопоставляем пункты, показываем точные изменения, затем при наличии ключа просим AI оценить только затронутые фрагменты. Цитаты проверяются приложением.")
+    st.caption("Сопоставляем пункты, показываем точные изменения и при наличии ключа просим AI оценить контекст. Цитаты проверяются приложением.")
 
 st.markdown("<div class='brandline'><span class='brandmark'>◈</span> Teren Oi · Document intelligence</div>", unsafe_allow_html=True)
 st.markdown("<div class='hero'><h1>Сравнение редакций документов</h1><p>Найдите изменения в обязанностях и проверьте каждый вывод по исходному пункту.</p></div>", unsafe_allow_html=True)
@@ -244,7 +240,7 @@ with st.form("comparison_inputs", clear_on_submit=False):
         st.markdown("### 01 · До изменений")
         before_mode = st.radio("Источник старой редакции", ["Файл", "Текст"], horizontal=True, key="before_mode")
         if before_mode == "Файл":
-            before_file = st.file_uploader("Перетащите или выберите DOCX, PDF, TXT", type=["docx", "pdf", "txt"], key="before_file")
+            before_file = st.file_uploader("Перетащите или выберите DOCX, PDF, TXT, XLSX", type=UPLOAD_TYPES, key="before_file")
             before_text = ""
         else:
             st.session_state.setdefault("before_text", "")
@@ -255,7 +251,7 @@ with st.form("comparison_inputs", clear_on_submit=False):
         st.markdown("### 02 · После изменений")
         after_mode = st.radio("Источник новой редакции", ["Файл", "Текст"], horizontal=True, key="after_mode")
         if after_mode == "Файл":
-            after_file = st.file_uploader("Перетащите или выберите DOCX, PDF, TXT", type=["docx", "pdf", "txt"], key="after_file")
+            after_file = st.file_uploader("Перетащите или выберите DOCX, PDF, TXT, XLSX", type=UPLOAD_TYPES, key="after_file")
             after_text = ""
         else:
             st.session_state.setdefault("after_text", "")
@@ -288,7 +284,7 @@ if compare_clicked or demo_clicked:
         findings: list[Finding] = []
         ai_error = None
         if use_ai and os.getenv("OPENAI_API_KEY"):
-            with st.spinner("AI анализирует только изменённые пункты и проверяет источники…"):
+            with st.spinner("AI анализирует изменённые пункты и контекст сохранённых функций…"):
                 try:
                     findings = analyze_changes(result, os.getenv("OPENAI_MODEL", "gpt-5.4-mini"))
                 except AnalysisError as exc:
@@ -311,6 +307,22 @@ if comparison:
     if st.session_state.get("ai_error"):
         st.warning(f"AI-анализ не завершился: {st.session_state['ai_error']} Точный diff показан ниже.")
 
+    with st.expander("Исходные пункты и места в документах"):
+        for document, label in ((comparison.old_document, "До изменений"),
+                                (comparison.new_document, "После изменений")):
+            st.markdown(f"#### {label} · {document.name}")
+            st.dataframe(source_rows(document), use_container_width=True, hide_index=True)
+            if document.unnumbered_blocks:
+                st.warning(
+                    f"{len(document.unnumbered_blocks)} ненумерованных фрагментов не вошли "
+                    "в сравнение пунктов. Просмотрите их вручную ниже."
+                )
+                st.dataframe(
+                    [{"Фрагмент": number, "Текст": text}
+                     for number, text in enumerate(document.unnumbered_blocks, start=1)],
+                    use_container_width=True, hide_index=True,
+                )
+
     status_tab, loss_tab, duplicate_tab, mapping_tab, export_tab = st.tabs(
         ["Подразделения", "Потери функций", "Дубли и конфликты", "Матрица маппинга", "Экспорт заключения"]
     )
@@ -323,9 +335,13 @@ if comparison:
                                    ("Сохранено без изменений", comparison.unchanged), ("Удалено", comparison.removed)):
                 st.markdown(f"**{title} — {len(changes)}**")
                 for item in changes:
-                    clause = item.after or item.before
-                    if clause:
-                        st.markdown(f"- Пункт {item.clause_id}: {clause.text}")
+                    st.markdown(f"**Пункт {item.clause_id}**")
+                    if item.before:
+                        st.write(f"До: {item.before.text}")
+                        st.caption(f"{item.before.source} · {item.before.location}")
+                    if item.after:
+                        st.write(f"После: {item.after.text}")
+                        st.caption(f"{item.after.source} · {item.after.location}")
 
     with loss_tab:
         st.subheader("Сигналы о возможной потере функций")
@@ -333,10 +349,11 @@ if comparison:
         for change in comparison.removed:
             if change.before:
                 st.error(f"ПУНКТ УДАЛЁН · требуется проверить перенос функции · {change.clause_id}\n\n{change.before.text}")
+                st.caption(f"Источник: {change.before.source} · {change.before.location}")
         for finding in loss_findings:
             st.error(f"{risk_label(finding.confidence)} · {finding.title}\n\n{finding.explanation}")
             for citation in finding.citations:
-                st.caption(f"Источник: редакция {citation.document_label}, пункт {citation.clause_id} — «{citation.quote}»")
+                st.caption(f"Источник: {citation_source(comparison, citation)}, редакция {citation.document_label}, пункт {citation.clause_id} — «{citation.quote}»")
         if not comparison.removed and not loss_findings:
             st.success("Явных удалённых пунктов или подтверждённых AI-сигналов потери нет.")
         st.caption("Удаление пункта само по себе не доказывает потерю функции: она могла быть перенесена или объединена.")
@@ -349,7 +366,7 @@ if comparison:
             for finding in overlap_findings:
                 st.warning(f"{finding.title} · {finding.confidence} уверенность\n\n{finding.explanation}")
                 for citation in finding.citations:
-                    st.caption(f"Источник: редакция {citation.document_label}, пункт {citation.clause_id} — «{citation.quote}»")
+                    st.caption(f"Источник: {citation_source(comparison, citation)}, редакция {citation.document_label}, пункт {citation.clause_id} — «{citation.quote}»")
         elif not os.getenv("OPENAI_API_KEY") or not use_ai:
             st.info("Включите AI-анализ и задайте OPENAI_API_KEY, чтобы искать смысловое дублирование. Точный diff не делает выводов о конфликте функций.")
         else:
@@ -358,7 +375,11 @@ if comparison:
         for item in comparison.modified:
             with st.expander(f"Пункт {item.clause_id}"):
                 st.markdown(f"**До:** {item.before.text if item.before else '—'}")
+                if item.before:
+                    st.caption(f"{item.before.source} · {item.before.location}")
                 st.markdown(f"**После:** {item.after.text if item.after else '—'}")
+                if item.after:
+                    st.caption(f"{item.after.source} · {item.after.location}")
 
     with mapping_tab:
         st.subheader("Матрица сопоставления пунктов")
@@ -368,16 +389,37 @@ if comparison:
             for item in changes:
                 rows.append({"Статус": status, "Пункт": item.clause_id,
                              "Старая редакция": item.before.text if item.before else "—",
-                             "Новая редакция": item.after.text if item.after else "—"})
+                             "Новая редакция": item.after.text if item.after else "—",
+                             "Источник до": (f"{item.before.source} · {item.before.location}"
+                                              if item.before else "—"),
+                             "Источник после": (f"{item.after.source} · {item.after.location}"
+                                                 if item.after else "—")})
         st.dataframe(rows, use_container_width=True, hide_index=True,
                      column_config={"Статус": st.column_config.TextColumn("Статус", width="small"),
                                     "Пункт": st.column_config.TextColumn("Пункт", width="small"),
                                     "Старая редакция": st.column_config.TextColumn("Старая редакция", width="large"),
-                                    "Новая редакция": st.column_config.TextColumn("Новая редакция", width="large")})
+                                    "Новая редакция": st.column_config.TextColumn("Новая редакция", width="large"),
+                                    "Источник до": st.column_config.TextColumn("Источник до", width="medium"),
+                                    "Источник после": st.column_config.TextColumn("Источник после", width="medium")})
 
     with export_tab:
         st.subheader("Скачать результат")
         markdown_report = report_as_markdown(comparison, findings, old_name, new_name)
+        if st.session_state.get("ai_error"):
+            markdown_report += (
+                "\n## Статус AI-проверки\n\n"
+                f"AI-проверка не завершилась: {st.session_state['ai_error']} "
+                "Локальное сопоставление выполнено.\n"
+            )
+        omitted_before = len(comparison.old_document.unnumbered_blocks)
+        omitted_after = len(comparison.new_document.unnumbered_blocks)
+        if omitted_before or omitted_after:
+            markdown_report += (
+                "\n## Охват исходных документов\n\n"
+                "Ненумерованные фрагменты не вошли в автоматическое сравнение "
+                f"(до: {omitted_before}, после: {omitted_after}). "
+                "Проверьте их вручную в исходных документах.\n"
+            )
         json_report = report_as_json(comparison, findings, old_name, new_name)
         left, right = st.columns(2)
         left.download_button("Скачать заключение Markdown", markdown_report, "teren-oi-zaklyuchenie.md", "text/markdown", use_container_width=True)

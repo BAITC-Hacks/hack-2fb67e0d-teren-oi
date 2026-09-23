@@ -39,15 +39,13 @@ UNIT_PATTERN = re.compile(
     r"ДЕПАРТАМЕНТ|УПРАВЛЕНИЕ|ОТДЕЛ|ЦЕНТР|СЛУЖБА|ГРУППА|ДИРЕКЦИЯ)\s+[^:;,.\n]{2,90})",
 )
 
-DEMO_BEFORE = """Положение о контроле качества обслуживания — учебный пример
-2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
+DEMO_BEFORE = """2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
 2.2 Центр контроля качества: выборочно проверяет записи разговоров, фиксирует нарушения стандарта и назначает срок исправления.
 2.3 Региональные подразделения: обрабатывают обращения клиентов, устраняют причину и закрывают заявку после подтверждения результата.
 2.4 Группа обратной связи: собирает отзывы после закрытия обращений и передаёт замечания ответственному подразделению.
 """
 
-DEMO_AFTER = """Положение о контроле качества обслуживания — учебный пример
-2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
+DEMO_AFTER = """2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
 2.3 Региональные подразделения: обрабатывают обращения клиентов и устраняют причину; закрытие заявки выполняется после проверки результата.
 2.4 Департамент клиентского опыта: анализирует обращения и отзывы клиентов, готовит сводный отчёт и предлагает улучшения сервиса.
 2.5 Группа обратной связи: собирает отзывы после закрытия обращений и передаёт замечания ответственному подразделению.
@@ -296,33 +294,51 @@ async def analyze(
     else:
         old_document = await _source_document(before_file, before_text, "до")
         new_document = await _source_document(after_file, after_text, "после")
+    omitted_before = len(old_document.unnumbered_blocks)
+    omitted_after = len(new_document.unnumbered_blocks)
+    warnings: list[str] = []
+    if omitted_before or omitted_after:
+        warnings.append(
+            "Ненумерованные фрагменты не вошли в автоматическое сравнение "
+            f"(до: {omitted_before}, после: {omitted_after}). "
+            "Проверьте их вручную в исходных документах."
+        )
     comparison = await to_thread(compare_documents, old_document, new_document)
     findings = _structural_findings(comparison)
+    ai_error: str | None = None
     if use_ai:
         if not os.getenv("OPENAI_API_KEY"):
             raise ApiProblem(400, "AI_NOT_CONFIGURED", "Для AI-анализа нужен локальный OPENAI_API_KEY.")
         try:
             ai_findings = await to_thread(analyze_changes, comparison, MODEL)
         except AnalysisError as exc:
-            raise ApiProblem(502, "AI_ANALYSIS_FAILED", str(exc)) from exc
-        explained_losses = {
-            citation.clause_id
-            for finding in ai_findings
-            if finding.kind == "потенциальная потеря функции"
-            for citation in finding.citations
-            if citation.document_label == "до"
-        }
-        findings = [
-            finding for finding in findings
-            if finding.citations[0].clause_id not in explained_losses
-        ]
-        findings.extend(ai_findings)
+            ai_error = str(exc)
+        else:
+            explained_losses = {
+                citation.clause_id
+                for finding in ai_findings
+                if finding.kind == "потенциальная потеря функции"
+                for citation in finding.citations
+                if citation.document_label == "до"
+            }
+            findings = [
+                finding for finding in findings
+                if finding.citations[0].clause_id not in explained_losses
+            ]
+            findings.extend(ai_findings)
     units = _units(comparison)
     duplicate_count = sum(item.kind == "потенциальное дублирование" for item in findings)
     loss_count = sum(item.kind == "потенциальная потеря функции" for item in findings)
     report_markdown = await to_thread(
         report_as_markdown, comparison, findings, old_document.name, new_document.name
     )
+    if ai_error:
+        report_markdown += (
+            "\n## Статус AI-проверки\n\n"
+            f"AI-проверка не завершилась: {ai_error} Локальное сопоставление выполнено.\n"
+        )
+    if warnings:
+        report_markdown += "\n## Охват исходных документов\n\n" + "\n\n".join(warnings) + "\n"
     if len(report_markdown) > MAX_REPORT_CHARS:
         raise ApiProblem(413, "REPORT_TOO_LARGE", "Итоговый отчёт превышает допустимый размер.")
     return {
@@ -340,6 +356,8 @@ async def analyze(
         "findings": [_finding_payload(finding, comparison) for finding in findings],
         "report_markdown": report_markdown,
         "source_names": {"before": old_document.name, "after": new_document.name},
+        "ai_error": ai_error,
+        "warnings": warnings,
     }
 
 

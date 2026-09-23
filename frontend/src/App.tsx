@@ -98,7 +98,7 @@ export default function App() {
         demo,
       })
       setResult(data)
-      setAnalysisUsedAi(aiRequested)
+      setAnalysisUsedAi(aiRequested && !data.ai_error)
       setStep('results')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Не удалось выполнить анализ.')

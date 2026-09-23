@@ -55,6 +55,8 @@ export interface AnalysisResponse {
   findings: Finding[]
   report_markdown: string
   source_names: { before: string; after: string }
+  ai_error?: string | null
+  warnings?: string[]
 }
 
 export interface AnalysisInput {
