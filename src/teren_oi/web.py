@@ -33,7 +33,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_TEXT_CHARS = 500_000
 MAX_REPORT_CHARS = 1_000_000
-MODEL = os.getenv("OPENAI_MODEL", "gpt-5.4-mini")
+MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
 UNIT_PATTERN = re.compile(
     r"\b((?:Департамент|Управление|Отдел|Центр|Служба|Группа|Дирекция|"
     r"ДЕПАРТАМЕНТ|УПРАВЛЕНИЕ|ОТДЕЛ|ЦЕНТР|СЛУЖБА|ГРУППА|ДИРЕКЦИЯ)\s+[^:;,.\n]{2,90})",

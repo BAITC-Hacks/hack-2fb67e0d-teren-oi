@@ -205,7 +205,7 @@ with st.sidebar:
     st.divider()
     if os.getenv("OPENAI_API_KEY"):
         st.success("AI-анализ подключён")
-        st.caption(f"Модель: {os.getenv('OPENAI_MODEL', 'gpt-5.4-mini')}")
+        st.caption(f"Модель: {os.getenv('OPENAI_MODEL', 'gpt-5.6-terra')}")
     else:
         st.warning("API-ключ не задан")
         st.caption("Точный diff работает без ключа. Добавьте OPENAI_API_KEY в .env для AI-выводов.")
@@ -286,7 +286,7 @@ if compare_clicked or demo_clicked:
         if use_ai and os.getenv("OPENAI_API_KEY"):
             with st.spinner("AI анализирует изменённые пункты и контекст сохранённых функций…"):
                 try:
-                    findings = analyze_changes(result, os.getenv("OPENAI_MODEL", "gpt-5.4-mini"))
+                    findings = analyze_changes(result, os.getenv("OPENAI_MODEL", "gpt-5.6-terra"))
                 except AnalysisError as exc:
                     ai_error = str(exc)
         st.session_state["comparison"] = result
