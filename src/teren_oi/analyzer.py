@@ -6,6 +6,7 @@ import math
 import os
 import re
 from collections import Counter, defaultdict, deque
+from collections.abc import Iterator
 from dataclasses import dataclass
 from typing import TypedDict, TypeVar
 
@@ -72,10 +73,13 @@ department departments division divisions unit units function functions activity
 activities responsibility responsibilities audit audits auditing control controls
 organization organisation organizational organisational perform performs conduct
 conducts carry carries out internal external general regulation regulations
+work works working routine task tasks
 и в во на по с со к из от до за для о об а но или при под над между через
 это этот эта эти его ее их все всех также должен должна должны является
 быть согласно соответствии осуществляет осуществление обеспечивает
 обеспечение проводит проведение внутренний внешний общий положения положение
+работа работы работе работу работой работ работам работами работах
+задача задачи задаче задачу задачей задач задачам задачами задачах
 """.split())
 _GENERIC_TERM = re.compile(
     r"^(?:департамент|подразделен|отдел|управлен|аудит|контрол|организа|"
@@ -83,7 +87,19 @@ _GENERIC_TERM = re.compile(
     r"organis|organiz|audit|control|department|division)"
 )
 _ORG_WORD = re.compile(
-    r"\b(?:departments?|divisions?|units?|департамент\w*|подразделен\w*|отдел\w*)\b",
+    r"\b(?:departments?|divisions?|units?|департамент\w*|подразделен\w*|отдел\w*|управлен\w*)\b",
+    re.IGNORECASE,
+)
+_OWNER_PREFIX = re.compile(
+    r"^\s*(?i:department|division|unit|департамент\w*|подразделен\w*|отдел\w*|управлен\w*)"
+    r"\s+(?P<name>[A-ZА-ЯЁ][\w-]*(?:[ \t]+[A-ZА-ЯЁ][\w-]*)*)"
+)
+_OWNER_ACTION = re.compile(
+    r"\b(?:approves?|authori[sz]es?|coordinates?|maintains?|monitors?|reviews?|"
+    r"checks?|prepares?|manages?|handles?|verifies|verify|controls|organi[sz]es?|"
+    r"проверяет|проверяют|готовит|готовят|контролирует|контролируют|"
+    r"осуществляет|осуществляют|обеспечивает|обеспечивают|организует|организуют|"
+    r"согласовывает|согласовывают|проводит|проводят|вед[её]т|ведут)\b",
     re.IGNORECASE,
 )
 
@@ -93,6 +109,8 @@ class _ClauseFeatures:
     terms: frozenset[str]
     phrases: frozenset[tuple[str, str]]
     structural: bool
+    owner: frozenset[str] = frozenset()
+    heading: bool = False
 
 
 @dataclass(frozen=True)
@@ -110,9 +128,7 @@ class _EvidenceSelection:
     bundles: tuple[_EvidenceBundle, ...]
 
 
-def _features(body: str) -> _ClauseFeatures:
-    # Score only the fragment that can actually reach the model.
-    body = body[:_MAX_CLAUSE_CHARS]
+def _significant_tokens(body: str) -> list[str]:
     tokens: list[str] = []
     for word in re.findall(r"[^\W\d_]{2,}", body.casefold().replace("ё", "е")):
         if word in _STOP_WORDS or _GENERIC_TERM.match(word):
@@ -127,9 +143,55 @@ def _features(body: str) -> _ClauseFeatures:
             word = word[:-1]
         if len(word) >= 2:
             tokens.append(word)
+    return tokens
+
+
+def _features(body: str) -> _ClauseFeatures:
+    # Score only the fragment that can actually reach the model. Explicit leading
+    # owner names are separate from responsibilities, so an owner change neither
+    # hides a short function nor makes unrelated functions match on the owner alone.
+    body = body[:_MAX_CLAUSE_CHARS]
+    prefix = _OWNER_PREFIX.match(body)
+    owner_text = prefix["name"] if prefix else ""
+    owner_end = prefix.end() if prefix else 0
+    # In title-case/all-caps paragraphs a finite action verb may look like part
+    # of a capitalized name. Keep its responsibility in the scoring text.
+    action = _OWNER_ACTION.search(owner_text)
+    if prefix and action:
+        owner_text = owner_text[:action.start()]
+        owner_end = prefix.start("name") + action.start()
+    owner = frozenset(_significant_tokens(owner_text))
+    tail = body[owner_end:].strip(" \t\r\n:;.,—–-") if prefix else body
+    heading = bool(owner) and not tail
+    tokens = _significant_tokens(tail if prefix and not heading else body)
     structural = bool(_ORG_WORD.search(body)) and len(tokens) <= 16
     structural |= bool(re.fullmatch(r"\s*[A-ZА-ЯЁ]{2,12}[.;]?\s*", body))
-    return _ClauseFeatures(frozenset(tokens), frozenset(zip(tokens, tokens[1:])), structural)
+    return _ClauseFeatures(
+        frozenset(tokens), frozenset(zip(tokens, tokens[1:])), structural, owner, heading,
+    )
+
+
+def _duplication_pairs(
+    indices: list[int], features: list[_ClauseFeatures],
+) -> Iterator[tuple[int, int]]:
+    """Use postings to visit only NEW pairs with potentially admissible overlap.
+
+    Keep occurrence indices (including repeated IDs). One shared term can be
+    enough for a short named-owner responsibility; score() applies that guard.
+    The per-query set is discarded each time, never a quadratic pair matrix.
+    """
+    postings: dict[str, list[int]] = defaultdict(list)
+    for index in indices:
+        if not features[index].heading:
+            for term in sorted(features[index].terms):
+                postings[term].append(index)
+    for left in indices:
+        if features[left].heading:
+            continue
+        neighbors = {right for term in features[left].terms for right in postings[term]
+                     if right > left}
+        for right in sorted(neighbors):
+            yield left, right
 
 
 def _candidate_retrieval(
@@ -140,11 +202,13 @@ def _candidate_retrieval(
     Pair scores combine IDF-weighted containment, Jaccard and adjacent terms.
     Rare shared terms rank above repeated boilerplate. Generic vocabulary alone
     cannot make a match. A score is retrieval priority, never semantic confidence.
-    Work is quadratic in clauses (times feature size), with O(n*k) stored edges.
+    Work is at worst quadratic in clauses (times feature size), with O(n*k)
+    stored edges. NEW/NEW postings skip pairs without meaningful shared terms.
     """
-    frequency = Counter(term for feature in features for term in feature.terms)
+    frequency = Counter(term for feature in features for term in feature.terms | feature.owner)
     weights = {term: math.log1p(len(features) / count) for term, count in frequency.items()}
     masses = [sum(weights[term] for term in sorted(feature.terms)) for feature in features]
+    owner_masses = [sum(weights[term] for term in sorted(feature.owner)) for feature in features]
     importance = [mass / max(1, len(feature.terms))
                   for mass, feature in zip(masses, features)]
     cross: dict[int, list[tuple[int, float]]] = {}
@@ -152,13 +216,24 @@ def _candidate_retrieval(
 
     def score(left: int, right: int, *, duplication: bool = False) -> float:
         a, b = features[left], features[right]
-        shared = a.terms & b.terms
-        name_match = a.structural and b.structural and min(len(a.terms), len(b.terms)) == 1
-        if not shared or (len(shared) < 2 and (duplication or not name_match)):
+        if duplication and (a.heading or b.heading):
+            return 0.0
+        # Owner overlap can retrieve a department declaration and a mention of
+        # that department. Two responsibilities must overlap on their content.
+        owner_match = bool(a.owner and b.owner and (a.heading or b.heading))
+        terms_a, terms_b = (a.owner, b.owner) if owner_match else (a.terms, b.terms)
+        mass_a, mass_b = ((owner_masses[left], owner_masses[right]) if owner_match
+                          else (masses[left], masses[right]))
+        shared = terms_a & terms_b
+        short_match = (
+            a.structural and b.structural and min(len(terms_a), len(terms_b)) == 1
+            and (not duplication or bool(a.owner and b.owner))
+        )
+        if not shared or (len(shared) < 2 and not short_match):
             return 0.0
         common = sum(weights[term] for term in sorted(shared))
-        containment = common / min(masses[left], masses[right])
-        jaccard = common / (masses[left] + masses[right] - common)
+        containment = common / min(mass_a, mass_b)
+        jaccard = common / (mass_a + mass_b - common)
         phrase_overlap = len(a.phrases & b.phrases) / max(1, min(len(a.phrases), len(b.phrases)))
         similarity = 0.55 * containment + 0.35 * jaccard + 0.10 * phrase_overlap
         if similarity < (0.55 if duplication else 0.30):
@@ -183,12 +258,11 @@ def _candidate_retrieval(
             if value:
                 remember(cross, left, right, value)
                 remember(cross, right, left, value)
-    for offset, left in enumerate(new):
-        for right in new[offset + 1:]:
-            value = score(left, right, duplication=True)
-            if value:
-                remember(duplicates, left, right, value)
-                remember(duplicates, right, left, value)
+    for left, right in _duplication_pairs(new, features):
+        value = score(left, right, duplication=True)
+        if value:
+            remember(duplicates, left, right, value)
+            remember(duplicates, right, left, value)
     return cross, duplicates, importance
 
 
@@ -202,6 +276,9 @@ of continuity. Departments may be retained under different numbers. Check both r
 for retained/reorganized departments and retained/reassigned functions. Shared vocabulary
 alone does not establish duplication or conflict. Missing retrieval candidates never prove
 absence. Search all supplied clauses and exact aliases before suggesting possible loss.
+One responsibility may split across several clauses, or several may merge: use multiple
+supported mappings where appropriate. Duplication/conflict are possible signals, not proven
+facts; state uncertainty and do not confuse textual deletion with loss of a responsibility.
 
 Every citation must copy document_label and clause_id from the SAME supplied JSON object,
 or from one of that object's explicit aliases. An alias identifies the exact same text in

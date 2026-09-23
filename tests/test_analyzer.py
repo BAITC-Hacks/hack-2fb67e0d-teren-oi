@@ -333,6 +333,111 @@ class SemanticEvidenceRetrievalTests(unittest.TestCase):
         for neighbors in (*retrieval[0].values(), *retrieval[1].values()):
             self.assertLessEqual(len(neighbors), 2)
 
+    def test_short_responsibilities_match_despite_different_owner_names(self) -> None:
+        for responsibility in ("controls payments", "approves payments"):
+            old = f"Department Alpha {responsibility}."
+            new = f"Department Beta {responsibility}."
+            for same_revision in (False, True):
+                with self.subTest(responsibility=responsibility, new_pair=same_revision):
+                    comparison = compare_documents(
+                        _document("before", [] if same_revision else [("1", old)]),
+                        _document("after", [("2", old), ("3", new)] if same_revision
+                                  else [("3", new)]),
+                    )
+                    candidates = analyzer._candidates(comparison)
+                    cross, duplicates, _ = analyzer._candidate_retrieval(
+                        candidates, [analyzer._features(item[3]) for item in candidates],
+                    )
+                    matches = duplicates if same_revision else cross
+                    self.assertEqual(matches[0][0][0], 1)
+                    self.assertEqual(matches[1][0][0], 0)
+
+    def test_shared_owner_name_alone_does_not_pair_different_responsibilities(self) -> None:
+        bodies = [("1", "Department Alpha Treasury controls payments."),
+                  ("2", "Department Alpha Treasury controls warehouses.")]
+        for same_revision in (False, True):
+            with self.subTest(new_pair=same_revision):
+                comparison = compare_documents(
+                    _document("before", [] if same_revision else bodies[:1]),
+                    _document("after", bodies if same_revision else bodies[1:]),
+                )
+                candidates = analyzer._candidates(comparison)
+                cross, duplicates, _ = analyzer._candidate_retrieval(
+                    candidates, [analyzer._features(item[3]) for item in candidates],
+                )
+                self.assertEqual(cross, {})
+                self.assertEqual(duplicates, {})
+
+    def test_capitalized_actions_are_not_swallowed_into_owner_headings(self) -> None:
+        for bodies in (
+            ("Department Alpha approves supplier payments.",
+             "Department Beta approves supplier payments."),
+            ("Департамент Альфа проверяет расчет зарплат.",
+             "Департамент Бета проверяет расчет зарплат."),
+        ):
+            for transform in (str.title, str.upper):
+                with self.subTest(bodies=bodies, case=transform.__name__):
+                    comparison = compare_documents(
+                        _document("before", []),
+                        _document("after", [(str(i), transform(body))
+                                            for i, body in enumerate(bodies)]),
+                    )
+                    candidates = analyzer._candidates(comparison)
+                    features = [analyzer._features(item[3]) for item in candidates]
+                    _, duplicates, _ = analyzer._candidate_retrieval(candidates, features)
+                    self.assertFalse(any(feature.heading for feature in features))
+                    self.assertEqual(duplicates[0][0][0], 1)
+                    self.assertEqual(duplicates[1][0][0], 0)
+
+    def test_work_boilerplate_does_not_retrieve_unrelated_functions(self) -> None:
+        for old, new in (
+            ("Department Alpha routine work: payroll.",
+             "Department Beta routine work: warehouse."),
+            ("Департамент Альфа: осуществление работы по расчету зарплат.",
+             "Департамент Бета: осуществление работ по хранению архивов."),
+        ):
+            comparison = compare_documents(_document("before", [("1", old)]),
+                                           _document("after", [("2", new)]))
+            candidates = analyzer._candidates(comparison)
+            cross, _, _ = analyzer._candidate_retrieval(
+                candidates, [analyzer._features(item[3]) for item in candidates],
+            )
+            self.assertEqual(cross, {})
+
+    def test_department_heading_matches_owner_mention_after_feature_separation(self) -> None:
+        for old, new in (
+            ("Department Alpha Treasury", "Department Alpha Treasury approves payments."),
+            ("Управление Альфа", "Управление Альфа: проверяет выплаты."),
+        ):
+            comparison = compare_documents(_document("before", [("1", old)]),
+                                           _document("after", [("2", new)]))
+            candidates = analyzer._candidates(comparison)
+            features = [analyzer._features(item[3]) for item in candidates]
+            cross, _, _ = analyzer._candidate_retrieval(candidates, features)
+            self.assertTrue(all(feature.structural for feature in features))
+            self.assertEqual(set(cross), {0, 1})
+            self.assertEqual(len(self._references(comparison)), 2)
+
+    def test_department_declarations_alone_are_not_duplication_candidates(self) -> None:
+        comparison = compare_documents(_document("before", []), _document("after", [
+            ("1", "Department Alpha Treasury"), ("2", "Department Alpha Treasury"),
+        ]))
+        candidates = analyzer._candidates(comparison)
+        _, duplicates, _ = analyzer._candidate_retrieval(
+            candidates, [analyzer._features(item[3]) for item in candidates],
+        )
+        self.assertEqual(duplicates, {})
+
+    def test_new_side_postings_visit_all_overlapping_occurrences_only(self) -> None:
+        features = [analyzer._ClauseFeatures(
+            frozenset({f"topic{i}", f"object{i // 2}"}), frozenset(), False,
+        ) for i in range(200)]
+        expected = [(left, right) for left in range(200) for right in range(left + 1, 200)
+                    if features[left].terms & features[right].terms]
+        pairs = list(analyzer._duplication_pairs(list(range(200)), features))
+        self.assertEqual(pairs, expected)
+        self.assertEqual(len(pairs), 100)
+
     def test_large_documents_keep_late_pairs_and_structural_continuity(self) -> None:
         old = [(f"1.{i}", "Department audit control: records routine scheduled reviews. " * 12)
                for i in range(480)]
