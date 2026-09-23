@@ -1,0 +1,128 @@
+import { useRef, useState } from 'react'
+import type { ChangeEvent, DragEvent } from 'react'
+import { motion, useReducedMotion } from 'framer-motion'
+import { Activity, ArrowRight, Check, FileSpreadsheet, FileText, FileType2, ShieldCheck, Sparkles, UploadCloud, X } from 'lucide-react'
+import type { DocumentSide, HealthResponse } from '../types'
+
+export type UploadedDocument = { file: File | null; text: string; progress: number; ready: boolean }
+export type Documents = Record<DocumentSide, UploadedDocument>
+
+function fileSize(bytes: number): string {
+  return bytes < 1024 * 1024 ? `${Math.max(1, Math.round(bytes / 1024))} КБ` : `${(bytes / 1024 / 1024).toFixed(1)} МБ`
+}
+
+function extensionOf(filename: string): string {
+  return `.${filename.split('.').pop()?.toLocaleLowerCase() || ''}`
+}
+
+function FileIcon({ filename }: { filename: string }) {
+  const extension = extensionOf(filename)
+  if (extension === '.xlsx') return <FileSpreadsheet aria-hidden="true" />
+  if (extension === '.pdf') return <FileType2 aria-hidden="true" />
+  return <FileText aria-hidden="true" />
+}
+
+function DocumentInput({
+  side, number, title, subtitle, value, accept, onFile, onRemove, onText,
+}: {
+  side: DocumentSide
+  number: string
+  title: string
+  subtitle: string
+  value: UploadedDocument
+  accept: string
+  onFile: (side: DocumentSide, file: File) => void
+  onRemove: (side: DocumentSide) => void
+  onText: (side: DocumentSide, text: string) => void
+}) {
+  const inputRef = useRef<HTMLInputElement>(null)
+  const [dragging, setDragging] = useState(false)
+  const reducedMotion = useReducedMotion()
+  const drop = (event: DragEvent<HTMLButtonElement>) => {
+    event.preventDefault()
+    setDragging(false)
+    const file = event.dataTransfer.files[0]
+    if (file) onFile(side, file)
+  }
+  const choose = (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (file) onFile(side, file)
+    event.target.value = ''
+  }
+
+  return (
+    <section className="document-panel" aria-labelledby={`${side}-heading`}>
+      <div className="document-panel__heading">
+        <span className="document-panel__number">{number}</span>
+        <div>
+          <h3 id={`${side}-heading`}>{title}</h3>
+          <p>{subtitle}</p>
+        </div>
+      </div>
+      <input className="visually-hidden" ref={inputRef} type="file" accept={accept} onChange={choose} aria-label={`Выбрать файл: ${title}`} />
+      {!value.file ? (
+        <button
+          type="button"
+          className={`dropzone ${dragging ? 'dropzone--active' : ''}`}
+          onClick={() => inputRef.current?.click()}
+          onDragEnter={(event) => { event.preventDefault(); setDragging(true) }}
+          onDragOver={(event) => event.preventDefault()}
+          onDragLeave={(event) => { event.preventDefault(); setDragging(false) }}
+          onDrop={drop}
+        >
+          <span className="dropzone__icon"><UploadCloud size={26} strokeWidth={1.8} aria-hidden="true" /></span>
+          <strong>Перетащите файл сюда</strong>
+          <span>или <span className="dropzone__link">выберите на компьютере</span></span>
+          <span className="dropzone__types" aria-hidden="true"><span>DOCX</span><span>PDF</span><span>XLSX</span><span>TXT</span></span>
+        </button>
+      ) : (
+        <motion.div className="file-card" initial={reducedMotion ? false : { opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }}>
+          <span className="file-card__icon"><FileIcon filename={value.file.name} /></span>
+          <div className="file-card__body">
+            <strong title={value.file.name}>{value.file.name}</strong>
+            <span>{fileSize(value.file.size)} · {value.ready ? 'Готов к анализу' : 'Подготовка файла'}</span>
+            <div className="file-progress" role="progressbar" aria-label={`Подготовка ${value.file.name}`} aria-valuenow={value.progress} aria-valuemin={0} aria-valuemax={100}>
+              <span style={{ width: `${value.progress}%` }} />
+            </div>
+          </div>
+          {value.ready && <motion.span className="file-card__check" initial={reducedMotion ? false : { scale: 0 }} animate={{ scale: 1 }} transition={reducedMotion ? { duration: 0 } : { type: 'spring', stiffness: 400, damping: 20 }}><Check size={16} aria-label="Файл готов" /></motion.span>}
+          <button type="button" className="icon-button file-card__remove" aria-label={`Удалить ${value.file.name}`} onClick={() => onRemove(side)}><X size={17} /></button>
+        </motion.div>
+      )}
+      <div className="text-input-head"><span>ИЛИ ВСТАВЬТЕ ТЕКСТ</span><span>Для быстрой проверки</span></div>
+      <label className="visually-hidden" htmlFor={`${side}-text`}>Текст: {title}</label>
+      <textarea
+        id={`${side}-text`}
+        rows={5}
+        placeholder={side === 'before' ? 'Вставьте текст исходного положения…' : 'Вставьте текст новой редакции…'}
+        value={value.text}
+        onChange={(event) => onText(side, event.target.value)}
+        disabled={Boolean(value.file)}
+        aria-describedby={value.file ? `${side}-text-hint` : undefined}
+      />
+      {value.file && <p id={`${side}-text-hint`} className="field-hint">Чтобы вставить текст, сначала удалите файл.</p>}
+    </section>
+  )
+}
+
+
+export default function ImportView({ documents, acceptedExtensions, health, useAi, onAiChange: setUseAi, onFile: updateFile, onRemove: removeFile, onText: updateText, onAnalyze: runAnalysis }: {
+  documents: Documents
+  acceptedExtensions: string[]
+  health: HealthResponse | null
+  useAi: boolean
+  onAiChange: (value: boolean) => void
+  onFile: (side: DocumentSide, file: File) => void
+  onRemove: (side: DocumentSide) => void
+  onText: (side: DocumentSide, text: string) => void
+  onAnalyze: (demo: boolean) => Promise<void>
+}) {
+  return <>
+              <div className="section-title-row"><div><span className="eyebrow">ШАГ 01 / ИСХОДНЫЕ ДАННЫЕ</span><h2>Добавьте документы для сравнения</h2><p>Поддерживаются файлы Word, PDF, Excel и обычный текст. Для анализа нужны обе редакции.</p></div><button type="button" className="demo-button" onClick={() => void runAnalysis(true)}><Sparkles size={17} />Загрузить контрольный демо-комплект Казахтелеком <ArrowRight size={16} /></button></div>
+              <div className="document-grid">
+                <DocumentInput side="before" number="01" title="Исходная редакция" subtitle="Документ до изменений" value={documents.before} accept={acceptedExtensions.join(',')} onFile={updateFile} onRemove={removeFile} onText={updateText} />
+                <DocumentInput side="after" number="02" title="Новая редакция" subtitle="Документ после изменений" value={documents.after} accept={acceptedExtensions.join(',')} onFile={updateFile} onRemove={removeFile} onText={updateText} />
+              </div>
+              <div className="analysis-toolbar"><div className="analysis-toolbar__note"><ShieldCheck size={18} /><span>Демо-комплект синтетический и не является официальным документом Казахтелекома.</span></div><div className="analysis-toolbar__controls"><label className={`ai-switch ${!health?.ai_available ? 'is-disabled' : ''}`}><input type="checkbox" checked={useAi && Boolean(health?.ai_available)} disabled={!health?.ai_available} onChange={(event) => setUseAi(event.target.checked)} /><span className="ai-switch__track" /><span>AI-анализ <small>{health?.ai_available ? 'Доступен' : 'Нужен API-ключ на сервере'}</small></span></label><button type="button" className="button button--primary" onClick={() => void runAnalysis(false)}><Activity size={18} />Запустить анализ структуры<ArrowRight size={17} /></button></div></div>
+  </>
+}
