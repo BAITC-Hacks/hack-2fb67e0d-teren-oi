@@ -100,6 +100,7 @@ def _candidates(comparison: Comparison) -> list[tuple[str, str, str, str]]:
 
 def _selected_evidence(
     candidates: list[tuple[str, str, str, str]],
+    *, max_alias_id_chars: int = 0,
 ) -> list[tuple[str, str, str, str]]:
     changed: list[tuple[str, str, str, str]] = []
     unchanged: list[tuple[str, str, str, str]] = []
@@ -124,14 +125,23 @@ def _selected_evidence(
 
     def size(item: tuple[str, str, str, str]) -> int:
         status, label, clause_id, body = item
-        return len(status) + len(label) + len(clause_id) + min(len(body), _MAX_CLAUSE_CHARS) + 48
+        # Count JSON escaping, keys, separators and the largest possible old-side
+        # alias. A conservative bound keeps coverage and the sent payload aligned.
+        aliases = ([{"document_label": "до", "clause_id": "x" * max_alias_id_chars}]
+                   if status == "без изменений" else [])
+        return len(json.dumps({
+            "status": status, "document_label": label, "clause_id": clause_id,
+            "text": body[:_MAX_CLAUSE_CHARS], "aliases": aliases,
+        }, ensure_ascii=False)) + 2
 
     selected: list[tuple[str, str, str, str]] = []
-    remaining = _MAX_EVIDENCE_CHARS
+    # Outer object (context_complete + clauses), including list delimiters.
+    available = max(0, _MAX_EVIDENCE_CHARS - 128)
+    remaining = available
     deferred: list[tuple[str, str, str, str]] = []
     for group, budget in (
-        (changed, int(_MAX_EVIDENCE_CHARS * _CHANGED_SHARE)),
-        (unchanged, _MAX_EVIDENCE_CHARS - int(_MAX_EVIDENCE_CHARS * _CHANGED_SHARE)),
+        (changed, int(available * _CHANGED_SHARE)),
+        (unchanged, available - int(available * _CHANGED_SHARE)),
     ):
         used = 0
         for item in group:
@@ -153,11 +163,18 @@ def _selected_evidence(
     return selected
 
 
+def _selection(comparison: Comparison) -> list[tuple[str, str, str, str]]:
+    # Escaped IDs may consume more than their visible length.
+    alias_size = max((len(json.dumps(c.clause_id, ensure_ascii=False)) - 2
+                      for c in comparison.old_document.clauses), default=0)
+    return _selected_evidence(_candidates(comparison), max_alias_id_chars=alias_size)
+
+
 def _evidence(comparison: Comparison) -> list[tuple[str, str, str, str]]:
     """Selected (status, document, clause ID, truncated text) occurrences."""
     return [
         (status, label, clause_id, body[:_MAX_CLAUSE_CHARS])
-        for status, label, clause_id, body in _selected_evidence(_candidates(comparison))
+        for status, label, clause_id, body in _selection(comparison)
     ]
 
 
@@ -173,7 +190,7 @@ def evidence_coverage(comparison: Comparison, *, sent: bool = False) -> dict[str
     unnumbered source blocks; body counts alone do not establish full coverage.
     """
     candidates = _candidates(comparison)
-    selected = _selected_evidence(candidates) if sent else []
+    selected = _selection(comparison) if sent else []
     before_complete = after_complete = False
     if sent:
         _, allowed = _payload_evidence(comparison)
@@ -191,7 +208,7 @@ def evidence_coverage(comparison: Comparison, *, sent: bool = False) -> dict[str
 def evidence_omissions(comparison: Comparison) -> dict[str, list[str]]:
     """List at most 50 labels per limitation; counts remain in coverage."""
     candidates = _candidates(comparison)
-    selected = Counter(_selected_evidence(candidates))
+    selected = Counter(_selection(comparison))
     omitted: list[str] = []
     truncated: list[str] = []
     for item in candidates:
@@ -230,7 +247,7 @@ def _payload_evidence(
             before_by_after[(change.after.clause_id, change.after.text)].append(change.before)
     payload: list[dict[str, object]] = []
     allowed: list[tuple[DocumentLabel, str, str]] = []
-    for status, label, clause_id, full_text in _selected_evidence(_candidates(comparison)):
+    for status, label, clause_id, full_text in _selection(comparison):
         body = full_text[:_MAX_CLAUSE_CHARS]
         aliases: list[dict[str, str]] = []
         allowed.append((label, clause_id, body))

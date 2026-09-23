@@ -12,10 +12,7 @@ from docx.text.paragraph import Paragraph
 
 from .models import SourceDocument
 from .parsers import TextBlock, compact_text, is_standalone_clause_id, parse_blocks
-
-
-class DocumentReadError(ValueError):
-    """Raised when an uploaded document cannot be read safely."""
+from .document_safety import DocumentReadError, bounded_blocks, validate_office_archive
 
 
 def _iter_text_blocks(document: Document):
@@ -75,8 +72,11 @@ def read_docx(data: bytes, name: str) -> SourceDocument:
     if not data:
         raise DocumentReadError(f"Файл «{name}» пустой. Выберите документ с текстом.")
     try:
+        validate_office_archive(data)
         document = Document(BytesIO(data))
-        blocks = list(_iter_text_blocks(document))
+        blocks = list(bounded_blocks(_iter_text_blocks(document)))
+    except DocumentReadError:
+        raise
     except (BadZipFile, PackageNotFoundError, XMLSyntaxError, KeyError, ValueError, OSError) as exc:
         raise DocumentReadError(
             f"Не удалось прочитать «{name}». Проверьте, что это DOCX, а не переименованный PDF."

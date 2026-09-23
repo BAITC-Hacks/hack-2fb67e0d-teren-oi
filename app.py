@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT / "src"))
 
-from teren_oi.analyzer import AnalysisError, analyze_changes  # noqa: E402
+from teren_oi.analyzer import AnalysisError, analyze_with_metadata  # noqa: E402
 from teren_oi.diff import compare_documents  # noqa: E402
 from teren_oi.docx_reader import DocumentReadError  # noqa: E402
 from teren_oi.models import Clause, Finding, SourceDocument  # noqa: E402
@@ -78,6 +78,8 @@ def source_from_text(text: str, name: str) -> SourceDocument:
 
 
 def read_uploaded(uploaded_file) -> SourceDocument:
+    if uploaded_file.size > 12 * 1024 * 1024:
+        raise InputError("Файл превышает 12 МБ. Разделите документ на части.")
     return comparable_document(read_document(uploaded_file.getvalue(), uploaded_file.name))
 
 
@@ -105,23 +107,18 @@ def render_unit_cards(comparison) -> None:
     def names(text: str) -> set[str]:
         return {re.sub(r"\s+", " ", match.group(1)).strip(" -–—") for match in UNIT_RE.finditer(text)}
 
-    for change in comparison.added:
-        if change.after:
-            for name in names(change.after.text):
-                buckets["created"][name.casefold()] = name
-    for change in comparison.removed:
-        if change.before:
-            for name in names(change.before.text):
-                buckets["removed"][name.casefold()] = name
-    for change in comparison.modified:
-        old_names = names(change.before.text) if change.before else set()
-        new_names = names(change.after.text) if change.after else set()
-        for name in old_names | new_names:
-            buckets["reorganized"][name.casefold()] = name
-    for change in comparison.unchanged:
-        if change.after:
-            for name in names(change.after.text):
-                buckets["retained"][name.casefold()] = name
+    # Classify each normalized name once across the complete extracted document.
+    old, new = {}, {}
+    for document, target in ((comparison.old_document, old), (comparison.new_document, new)):
+        for clause in document.clauses:
+            for name in names(clause.text):
+                label, texts = target.setdefault(name.casefold(), (name, set()))
+                texts.add(" ".join(clause.text.casefold().split()))
+    for key in sorted(old.keys() | new.keys()):
+        name = (new.get(key) or old[key])[0]
+        status = ("created" if key not in old else "removed" if key not in new
+                  else "retained" if old[key][1] == new[key][1] else "reorganized")
+        buckets[status][key] = name
 
     labels = (("Преобразовано", "reorganized"), ("Создано", "created"),
               ("Сохранено", "retained"), ("Удалённые названия", "removed"))
@@ -137,13 +134,11 @@ def render_unit_cards(comparison) -> None:
                     st.caption(f"И ещё {len(entries) - 8}…")
             else:
                 st.caption("Не обнаружено")
-    st.caption("Названия подразделений извлекаются эвристически из изменённых пунктов; проверьте их по первоисточнику.")
+    st.caption("Названия подразделений извлекаются эвристически из всех извлечённых пунктов; проверьте их по первоисточнику.")
 
 
 def risk_label(confidence: str) -> str:
-    return {"высокая": "ВЫСОКИЙ РИСК · уверенность AI высокая",
-            "средняя": "ПРОВЕРИТЬ · уверенность AI средняя",
-            "низкая": "СИГНАЛ · уверенность AI низкая"}.get(confidence, "ТРЕБУЕТ ПРОВЕРКИ")
+    return f"ТРЕБУЕТ ПРОВЕРКИ · оценка модели: {confidence} (не вероятность и не тяжесть риска)"
 
 
 st.set_page_config(page_title="Teren Oi · Анализ изменений", page_icon="◈", layout="wide")
@@ -217,7 +212,7 @@ st.markdown("<div class='brandline'><span class='brandmark'>◈</span> Teren Oi 
 st.markdown("<div class='hero'><h1>Сравнение редакций документов</h1><p>Найдите изменения в обязанностях и проверьте каждый вывод по исходному пункту.</p></div>", unsafe_allow_html=True)
 st.subheader("Проверка в 1 клик")
 st.caption("Запустите демонстрационный сценарий без подготовки файлов или загрузите свои редакции ниже.")
-demo_clicked = st.button("Загрузить контрольный демо-комплект Казахтелеком", type="primary", use_container_width=True,
+demo_clicked = st.button("Загрузить контрольный демо-комплект Казахтелеком", type="primary", width="stretch",
                          help="Подставляет безопасный учебный пример и сразу выполняет сравнение.")
 if demo_clicked:
     st.session_state["before_mode"] = "Текст"
@@ -260,12 +255,13 @@ with st.form("comparison_inputs", clear_on_submit=False):
             after_file = None
     use_ai = st.checkbox("Дополнить точный diff анализом AI (потери, дублирование, ответственность)",
                          value=bool(os.getenv("OPENAI_API_KEY")), key="use_ai")
-    compare_clicked = st.form_submit_button("Сравнить редакции", type="primary", use_container_width=True)
+    compare_clicked = st.form_submit_button("Сравнить редакции", type="primary", width="stretch")
 
 if use_ai and not os.getenv("OPENAI_API_KEY"):
     st.info("AI-ключ не найден. Точный diff доступен; AI-вкладки покажут подсказку по настройке ключа.")
 
 if compare_clicked or demo_clicked:
+    st.session_state.pop("comparison", None)
     try:
         if before_mode == "Файл":
             if not before_file:
@@ -283,15 +279,23 @@ if compare_clicked or demo_clicked:
         result = compare_documents(before_doc, after_doc)
         findings: list[Finding] = []
         ai_error = None
+        ai_status = "disabled" if not use_ai else "unavailable"
+        ai_coverage = {}
         if use_ai and os.getenv("OPENAI_API_KEY"):
             with st.spinner("AI анализирует изменённые пункты и контекст сохранённых функций…"):
                 try:
-                    findings = analyze_changes(result, os.getenv("OPENAI_MODEL", "gpt-5.6-terra"))
+                    analysis = analyze_with_metadata(result, os.getenv("OPENAI_MODEL", "gpt-5.6-terra"))
+                    findings = analysis.findings
+                    ai_status = "completed" if analysis.called else "skipped"
+                    ai_coverage = analysis.coverage
                 except AnalysisError as exc:
+                    ai_status = "failed"
                     ai_error = str(exc)
         st.session_state["comparison"] = result
         st.session_state["findings"] = findings
         st.session_state["ai_error"] = ai_error
+        st.session_state["ai_status"] = ai_status
+        st.session_state["ai_coverage"] = ai_coverage
         st.session_state["source_names"] = (before_doc.name, after_doc.name)
     except (InputError, DocumentReadError) as exc:
         st.error(str(exc))
@@ -300,6 +304,18 @@ comparison = st.session_state.get("comparison")
 if comparison:
     old_name, new_name = st.session_state.get("source_names", (comparison.old_document.name, comparison.new_document.name))
     findings: list[Finding] = st.session_state.get("findings", [])
+    ai_status = st.session_state.get("ai_status", "unavailable")
+    ai_status_text = {
+        "disabled": "ИИ выключен для этого результата. Выполнено локальное сравнение.",
+        "unavailable": "ИИ не запущен: API-ключ недоступен. Выполнено локальное сравнение.",
+        "skipped": "Модель не вызывалась: нет подходящих пунктов для проверки.",
+        "failed": "ИИ-проверка завершилась ошибкой. Выполнено локальное сравнение.",
+        "completed": "ИИ-проверка выполнена; проверенные цитаты приведены ниже.",
+    }.get(ai_status, "Статус ИИ неизвестен. Повторите анализ.")
+    st.info(ai_status_text)
+    ai_coverage = st.session_state.get("ai_coverage", {})
+    if ai_coverage:
+        st.caption(f"Охват ИИ: {ai_coverage.get('included_clauses', 0)} из {ai_coverage.get('total_clauses', 0)} фрагментов; усечено: {ai_coverage.get('truncated_clauses', 0)}.")
     metrics = st.columns(4)
     for col, label, value in zip(metrics, ("Добавлено", "Удалено", "Изменено", "Совпадает"),
                                  (len(comparison.added), len(comparison.removed), len(comparison.modified), len(comparison.unchanged))):
@@ -311,7 +327,7 @@ if comparison:
         for document, label in ((comparison.old_document, "До изменений"),
                                 (comparison.new_document, "После изменений")):
             st.markdown(f"#### {label} · {document.name}")
-            st.dataframe(source_rows(document), use_container_width=True, hide_index=True)
+            st.dataframe(source_rows(document), width="stretch", hide_index=True)
             if document.unnumbered_blocks:
                 st.warning(
                     f"{len(document.unnumbered_blocks)} ненумерованных фрагментов не вошли "
@@ -320,7 +336,7 @@ if comparison:
                 st.dataframe(
                     [{"Фрагмент": number, "Текст": text}
                      for number, text in enumerate(document.unnumbered_blocks, start=1)],
-                    use_container_width=True, hide_index=True,
+                    width="stretch", hide_index=True,
                 )
 
     status_tab, loss_tab, duplicate_tab, mapping_tab, export_tab = st.tabs(
@@ -361,16 +377,16 @@ if comparison:
     with duplicate_tab:
         st.subheader("Возможное дублирование и пересечение ответственности")
         overlap_findings = [finding for finding in findings if finding.kind in (
-            "потенциальное дублирование", "перераспределение ответственности")]
+            "потенциальное дублирование", "потенциальный конфликт интересов", "перераспределение ответственности")]
         if overlap_findings:
             for finding in overlap_findings:
                 st.warning(f"{finding.title} · {finding.confidence} уверенность\n\n{finding.explanation}")
                 for citation in finding.citations:
                     st.caption(f"Источник: {citation_source(comparison, citation)}, редакция {citation.document_label}, пункт {citation.clause_id} — «{citation.quote}»")
-        elif not os.getenv("OPENAI_API_KEY") or not use_ai:
-            st.info("Включите AI-анализ и задайте OPENAI_API_KEY, чтобы искать смысловое дублирование. Точный diff не делает выводов о конфликте функций.")
+        elif ai_status != "completed":
+            st.info(ai_status_text + " Точный diff не делает выводов о конфликте функций.")
         else:
-            st.success("AI не обнаружил обоснованных сигналов дублирования или пересечения ответственности.")
+            st.info("В проверенной выборке нет подтверждённых цитатами AI-сигналов дублирования или пересечения ответственности. Это не гарантирует отсутствия рисков в полном документе.")
         st.markdown("#### Изменённые фрагменты для ручной сверки")
         for item in comparison.modified:
             with st.expander(f"Пункт {item.clause_id}"):
@@ -394,7 +410,7 @@ if comparison:
                                               if item.before else "—"),
                              "Источник после": (f"{item.after.source} · {item.after.location}"
                                                  if item.after else "—")})
-        st.dataframe(rows, use_container_width=True, hide_index=True,
+        st.dataframe(rows, width="stretch", hide_index=True,
                      column_config={"Статус": st.column_config.TextColumn("Статус", width="small"),
                                     "Пункт": st.column_config.TextColumn("Пункт", width="small"),
                                     "Старая редакция": st.column_config.TextColumn("Старая редакция", width="large"),
@@ -405,6 +421,9 @@ if comparison:
     with export_tab:
         st.subheader("Скачать результат")
         markdown_report = report_as_markdown(comparison, findings, old_name, new_name)
+        markdown_report += f"\n## Статус и охват ИИ\n\n{ai_status_text}\n\n"
+        if ai_coverage:
+            markdown_report += f"Проверено {ai_coverage.get('included_clauses', 0)} из {ai_coverage.get('total_clauses', 0)} фрагментов; усечено {ai_coverage.get('truncated_clauses', 0)}.\n"
         if st.session_state.get("ai_error"):
             markdown_report += (
                 "\n## Статус AI-проверки\n\n"
@@ -422,8 +441,8 @@ if comparison:
             )
         json_report = report_as_json(comparison, findings, old_name, new_name)
         left, right = st.columns(2)
-        left.download_button("Скачать заключение Markdown", markdown_report, "teren-oi-zaklyuchenie.md", "text/markdown", use_container_width=True)
-        right.download_button("Скачать полный diff JSON", json_report, "teren-oi-diff.json", "application/json", use_container_width=True)
+        left.download_button("Скачать заключение Markdown", markdown_report, "teren-oi-zaklyuchenie.md", "text/markdown", width="stretch")
+        right.download_button("Скачать полный diff JSON", json_report, "teren-oi-diff.json", "application/json", width="stretch")
         st.markdown("#### Предпросмотр заключения")
         st.markdown(markdown_report)
 else:

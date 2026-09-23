@@ -14,7 +14,7 @@ from pathlib import Path
 from threading import Lock
 from typing import Literal
 
-_MAX_REPORT_LENGTH = 1_000_000
+MAX_REPORT_LENGTH = 4_000_000
 _FONT_LOCK = Lock()
 _PDF_FONT_NAMES: tuple[str, str] | None = None
 
@@ -328,8 +328,10 @@ def export_report(
     """Render a report and return (content, media type, download filename)."""
     if not isinstance(report_markdown, str) or not report_markdown.strip():
         raise ValueError("Report must contain non-empty Markdown text")
-    if len(report_markdown) > _MAX_REPORT_LENGTH:
-        raise ValueError(f"Report exceeds {_MAX_REPORT_LENGTH} characters")
+    if len(report_markdown) > MAX_REPORT_LENGTH:
+        raise ValueError(f"Report exceeds {MAX_REPORT_LENGTH} characters")
+    from .document_safety import validate_text
+    validate_text(report_markdown)
     blocks = _lines(report_markdown)
     if format == "docx":
         return (

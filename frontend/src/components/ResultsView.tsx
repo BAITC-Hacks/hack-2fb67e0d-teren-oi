@@ -130,7 +130,7 @@ function FindingCard({ finding, index, expanded, onToggle }: { finding: Finding;
   const tone = findingTone(finding.kind)
   return (
     <article id={`finding-${finding.id}`} tabIndex={-1} className={`finding-card finding-card--${tone}`}>
-      <div className="finding-card__top"><span className={`finding-icon finding-icon--${tone}`}><CircleAlert size={19} aria-hidden="true" /></span><Badge tone={tone}>{finding.kind}</Badge><span className="finding-card__index">{String(index + 1).padStart(2, '0')}</span></div>
+      <div className="finding-card__top"><span className={`finding-icon finding-icon--${tone}`}><CircleAlert size={19} aria-hidden="true" /></span><Badge tone={tone}>{finding.origin === 'local' && finding.kind === 'потенциальная потеря функции' ? 'Удалённый пункт' : finding.kind}</Badge><span className="finding-card__index">{String(index + 1).padStart(2, '0')}</span></div>
       <span className="finding-origin">{finding.origin === 'ai' ? 'Вывод ИИ · цитаты проверены' : 'Локальное сравнение · требует оценки эксперта'}</span>
       <h4>{finding.title}</h4>
       <p>{finding.explanation}</p>

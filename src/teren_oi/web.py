@@ -25,7 +25,8 @@ from .analyzer import AnalysisError, analyze_with_metadata, evidence_coverage, e
 from .diff import compare_documents, validate_analysis_response
 from .evidence import resolve_citation, validated_findings
 from .docx_reader import DocumentReadError
-from .export_formats import export_report
+from .document_safety import validate_text
+from .export_formats import MAX_REPORT_LENGTH, export_report
 from .models import Clause, Comparison, Finding, SourceDocument
 from .parsers import TextBlock, parse_blocks
 from .readers import SUPPORTED_EXTENSIONS, read_document
@@ -37,7 +38,7 @@ load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_TEXT_CHARS = 500_000
-MAX_REPORT_CHARS = 1_000_000
+MAX_REPORT_CHARS = MAX_REPORT_LENGTH
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
 REPORTS = ReportStore()
 UNIT_PATTERN = re.compile(
@@ -99,6 +100,10 @@ async def request_validation_handler(_request: Request, _error: RequestValidatio
 
 
 def _text_document(text: str, name: str) -> SourceDocument:
+    try:
+        validate_text(text)
+    except DocumentReadError as exc:
+        raise ApiProblem(400, "INVALID_TEXT", str(exc)) from exc
     if len(text) > MAX_TEXT_CHARS:
         raise ApiProblem(413, "TEXT_TOO_LARGE", "Текст превышает 500 000 символов. Разделите документ на части.")
     blocks = [
@@ -153,6 +158,7 @@ async def _source_document(file: UploadFile | None, text: str | None, label: str
     if len(data) > MAX_UPLOAD_BYTES:
         raise ApiProblem(413, "FILE_TOO_LARGE", "Файл превышает 12 МБ. Разделите документ на части или загрузите текстовую версию.")
     try:
+        validate_text(name)
         document = _with_fallback_clauses(await to_thread(read_document, data, name))
     except DocumentReadError as exc:
         raise ApiProblem(400, "DOCUMENT_READ_ERROR", str(exc)) from exc
@@ -469,7 +475,7 @@ async def analyze(
         + semantic_report(department_payloads, mapping_payloads),
     )
     if len(report_markdown) > MAX_REPORT_CHARS:
-        raise ApiProblem(413, "REPORT_TOO_LARGE", "Итоговый отчёт превышает допустимый размер.")
+        raise ApiProblem(413, "REPORT_TOO_LARGE", "Итоговый отчёт превышает 4 млн символов. Сравните документы по отдельным разделам.")
     return {
         "analysis_id": REPORTS.put(report_markdown),
         "summary": summary,
@@ -497,6 +503,8 @@ def export(payload: ExportRequest) -> Response:
         raise ApiProblem(410, "REPORT_EXPIRED", "Отчёт больше не хранится на сервере. Повторите анализ и скачайте его снова.")
     try:
         data, media_type, filename = export_report(markdown, payload.format)
+    except DocumentReadError as exc:
+        raise ApiProblem(400, "INVALID_REPORT_TEXT", str(exc)) from exc
     except (ValueError, RuntimeError) as exc:
         raise ApiProblem(500, "EXPORT_FAILED", str(exc)) from exc
     return Response(

@@ -5,16 +5,18 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from .models import Clause, SourceDocument
+from .document_safety import bounded_blocks
 
+_NUMERIC_ID = r"\d{1,20}(?:\.\d{1,20}){0,9}(?:\.[A-Za-zА-Яа-яЁё])?"
 NUMERIC_CLAUSE_RE = re.compile(
-    r"^\s*(?P<clause_id>\d+(?:\.\d+){0,9})\s*[.)]?\s*(?P<body>.*?)\s*$",
+    rf"^\s*(?P<clause_id>{_NUMERIC_ID})(?:(?:\.(?![\d.])|\))\s*|\s+|$)(?P<body>.*?)\s*$",
     re.DOTALL,
 )
 LETTERED_SUBPOINT_RE = re.compile(
     r"^\s*(?P<letter>[A-Za-zА-Яа-яЁё])\s*[.)]\s*(?P<body>.*?)\s*$",
     re.DOTALL,
 )
-CLAUSE_ID_ONLY_RE = re.compile(r"^\s*\d+(?:\.\d+){0,9}\s*[.)]?\s*$")
+CLAUSE_ID_ONLY_RE = re.compile(rf"^\s*{_NUMERIC_ID}\s*[.)]?\s*$")
 SUBPOINT_ID_ONLY_RE = re.compile(r"^\s*[A-Za-zА-Яа-яЁё]\s*[.)]\s*$")
 
 
@@ -81,7 +83,7 @@ def parse_blocks(blocks: Iterable[TextBlock], name: str) -> SourceDocument:
 
     fragments = [
         fragment
-        for block in blocks
+        for block in bounded_blocks(blocks)
         for fragment in _logical_fragments(block)
         if compact_text(fragment.text)
     ]
@@ -110,7 +112,7 @@ def parse_blocks(blocks: Iterable[TextBlock], name: str) -> SourceDocument:
                         ),
                     )
                 )
-                current_numeric_id = pending_id
+                current_numeric_id = re.sub(r"\.[A-Za-zА-Яа-яЁё]$", "", pending_id)
                 pending_numeric = None
                 continue
             unnumbered.append(compact_text(pending_block.text))
@@ -141,10 +143,10 @@ def parse_blocks(blocks: Iterable[TextBlock], name: str) -> SourceDocument:
 
         if numeric is not None:
             clause_id = numeric.group("clause_id").rstrip(".")
-            body = compact_text(numeric.group("body"))
+            body = compact_text(numeric.group("body") or "")
             if not body:
                 pending_numeric = (clause_id, fragment)
-                current_numeric_id = clause_id
+                current_numeric_id = re.sub(r"\.[A-Za-zА-Яа-яЁё]$", "", clause_id)
                 continue
             clauses.append(
                 Clause(
@@ -154,7 +156,7 @@ def parse_blocks(blocks: Iterable[TextBlock], name: str) -> SourceDocument:
                     location=_clause_location(fragment.location, clause_id),
                 )
             )
-            current_numeric_id = clause_id
+            current_numeric_id = re.sub(r"\.[A-Za-zА-Яа-яЁё]$", "", clause_id)
             continue
 
         if lettered is not None:

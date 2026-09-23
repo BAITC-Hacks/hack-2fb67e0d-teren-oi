@@ -160,13 +160,15 @@ def report_as_markdown(
 ) -> str:
     origins = {id(item): origin for item, origin in zip(findings, finding_origins or [])}
     validated = _validated_findings(comparison, findings)
-    losses = [item for item in validated if item[0].kind == "потенциальная потеря функции"]
+    local = [item for item in validated if origins.get(id(item[0])) == "local"]
+    losses = [item for item in validated if item[0].kind == "потенциальная потеря функции"
+              and origins.get(id(item[0])) != "local"]
     duplications = [item for item in validated if item[0].kind == "потенциальное дублирование"]
     mappings = [item for item in validated if item[0].kind == "перераспределение ответственности"]
     conflicts = [
         item
         for item in validated
-        if "конфликт" in f"{item[0].title} {item[0].explanation}".casefold()
+        if "конфликт" in f"{item[0].kind} {item[0].title} {item[0].explanation}".casefold()
     ]
 
     lines = [
@@ -206,6 +208,10 @@ def report_as_markdown(
 
     lines.extend(["## Potential Lost Functions / Потенциально потерянные функции", ""])
     _append_findings(lines, losses, origins)
+
+    lines.extend(["## Local Signals / Локальные сигналы точного сравнения", "",
+                  "Удалённые пункты требуют проверки переноса; это не вывод ИИ о потере функции.", ""])
+    _append_findings(lines, local, origins)
 
     lines.extend(["## Potential Duplications / Потенциальное дублирование", ""])
     _append_findings(lines, duplications, origins)

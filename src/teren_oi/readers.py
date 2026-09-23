@@ -14,6 +14,10 @@ from openpyxl import load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 
 from .docx_reader import DocumentReadError, read_docx
+from .document_safety import (
+    MAX_PDF_PAGES, MAX_SHEET_CELLS, MAX_TEXT_CHARS, bounded_blocks,
+    validate_office_archive, validate_text,
+)
 from .models import SourceDocument
 from .parsers import TextBlock, compact_text, is_standalone_clause_id, parse_blocks
 
@@ -37,8 +41,13 @@ def read_pdf(data: bytes, name: str) -> SourceDocument:
 
     _validate_input(data, name, ".pdf")
     blocks: list[TextBlock] = []
+    extracted_chars = 0
     try:
         with pymupdf.open(stream=data, filetype="pdf") as document:
+            if document.needs_pass:
+                raise DocumentReadError("PDF защищён паролем. Загрузите копию без пароля.")
+            if len(document) > MAX_PDF_PAGES:
+                raise DocumentReadError("PDF превышает 500 страниц. Разделите документ на части.")
             for page_number, page in enumerate(document, start=1):
                 for fallback_number, raw_block in enumerate(
                     page.get_text("blocks", sort=True), start=1
@@ -46,6 +55,10 @@ def read_pdf(data: bytes, name: str) -> SourceDocument:
                     if len(raw_block) > 6 and raw_block[6] != 0:
                         continue
                     text = str(raw_block[4]).strip()
+                    validate_text(text)
+                    extracted_chars += len(text)
+                    if extracted_chars > MAX_TEXT_CHARS:
+                        raise DocumentReadError("Извлечённый текст превышает 500 000 символов. Разделите PDF на части.")
                     if not compact_text(text):
                         continue
                     block_number = int(raw_block[5]) + 1 if len(raw_block) > 5 else fallback_number
@@ -55,6 +68,8 @@ def read_pdf(data: bytes, name: str) -> SourceDocument:
                             location=f"page {page_number} / block {block_number}",
                         )
                     )
+    except DocumentReadError:
+        raise
     except (
         pymupdf.FileDataError,
         pymupdf.EmptyFileError,
@@ -122,13 +137,21 @@ def read_xlsx(data: bytes, name: str) -> SourceDocument:
     _validate_input(data, name, ".xlsx")
     workbook = None
     try:
+        validate_office_archive(data)
         workbook = load_workbook(BytesIO(data), read_only=True, data_only=False)
-        blocks = [
-            block
-            for sheet in workbook.worksheets
-            for row in sheet.iter_rows()
-            for block in _xlsx_row_blocks(sheet, row)
-        ]
+        def iter_blocks():
+            scanned = 0
+            for sheet in workbook.worksheets:
+                if (sheet.max_row or 0) * (sheet.max_column or 0) > MAX_SHEET_CELLS:
+                    raise DocumentReadError("Область листа XLSX превышает 500 000 ячеек. Удалите пустые форматированные строки/столбцы или разделите файл.")
+                for row in sheet.iter_rows():
+                    scanned += len(row)
+                    if scanned > MAX_SHEET_CELLS:
+                        raise DocumentReadError("XLSX превышает 500 000 ячеек. Разделите файл на части.")
+                    yield from _xlsx_row_blocks(sheet, row)
+        blocks = list(bounded_blocks(iter_blocks()))
+    except DocumentReadError:
+        raise
     except (BadZipFile, InvalidFileException, XMLSyntaxError, ParseError, KeyError, ValueError, OSError) as exc:
         raise DocumentReadError(
             f"Не удалось прочитать «{name}». Проверьте, что файл является корректным XLSX."
@@ -155,6 +178,10 @@ def read_txt(data: bytes, name: str) -> SourceDocument:
         raise DocumentReadError(
             f"Не удалось прочитать «{name}». Поддерживаются кодировки UTF-8 и Windows-1251."
         )
+
+    validate_text(text)
+    if len(text) > MAX_TEXT_CHARS:
+        raise DocumentReadError("Текст превышает 500 000 символов. Разделите документ на части.")
 
     blocks = [
         TextBlock(line, f"line {line_number}")
