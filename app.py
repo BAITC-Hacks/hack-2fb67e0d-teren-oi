@@ -141,7 +141,7 @@ def risk_label(confidence: str) -> str:
     return f"ТРЕБУЕТ ПРОВЕРКИ · оценка модели: {confidence} (не вероятность и не тяжесть риска)"
 
 
-st.set_page_config(page_title="Tereñ oi · Анализ изменений", page_icon="◈", layout="wide")
+st.set_page_config(page_title="Teren Oi · Анализ изменений", page_icon="◈", layout="wide")
 st.markdown("""
 <style>
     :root { --ink: #17243a; --muted: #46566a; --paper: #f4f7fb; --line: #dbe3ec; --navy: #101f38; --teal: #087e8b; --teal-dark:#075e68; }
@@ -195,7 +195,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 with st.sidebar:
-    st.markdown("## ◈ Tereñ oi")
+    st.markdown("## ◈ TEREN OI")
     st.caption("Сравнение положений и функций между редакциями")
     st.divider()
     if os.getenv("OPENAI_API_KEY"):
@@ -208,7 +208,7 @@ with st.sidebar:
     st.markdown("**Как работает**")
     st.caption("Сопоставляем пункты, показываем точные изменения и при наличии ключа просим AI оценить контекст. Цитаты проверяются приложением.")
 
-st.markdown("<div class='brandline'><span class='brandmark'>◈</span> Tereñ oi · Document intelligence</div>", unsafe_allow_html=True)
+st.markdown("<div class='brandline'><span class='brandmark'>◈</span> Teren Oi · Document intelligence</div>", unsafe_allow_html=True)
 st.markdown("<div class='hero'><h1>Сравнение редакций документов</h1><p>Найдите изменения в обязанностях и проверьте каждый вывод по исходному пункту.</p></div>", unsafe_allow_html=True)
 st.subheader("Проверка в 1 клик")
 st.caption("Запустите демонстрационный сценарий без подготовки файлов или загрузите свои редакции ниже.")

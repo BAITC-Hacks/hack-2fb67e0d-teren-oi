@@ -18,7 +18,7 @@ SOURCE = "Положение_департамента_клиентской_ан�
 
 def sample_report() -> str:
     sections = [
-        "# Аналитическое заключение Tereñ oi", "",
+        "# Аналитическое заключение Teren Oi", "",
         f"- До: **{SOURCE}**", "- После: **Новая редакция.docx**", "",
         "## Итоговая сводка", "",
         "Изменения требуют ручной проверки. Данные относятся к синтетическому примеру.",
@@ -74,7 +74,7 @@ class ExportFormatTests(unittest.TestCase):
         self.assertEqual((media_type, filename), ("application/pdf", "teren_oi_report.pdf"))
         with pymupdf.open(stream=data, filetype="pdf") as document:
             self.assertGreater(document.page_count, 3)
-            self.assertEqual(document.metadata["author"], "Tereñ oi")
+            self.assertEqual(document.metadata["author"], "Teren Oi")
             text = "\n".join(page.get_text() for page in document)
             compact = "".join(text.split())
             self.assertIn("".join(QUOTE.split()), compact)
@@ -99,7 +99,7 @@ class ExportFormatTests(unittest.TestCase):
         self.assertIn(SOURCE, text)
         self.assertIn("5 < 10, A&B.", text)
         self.assertIn("Замечание 34", text)
-        self.assertEqual(document.core_properties.author, "Tereñ oi")
+        self.assertEqual(document.core_properties.author, "Teren Oi")
         self.assertIn("PAGE", document.sections[0].footer._element.xml)
         self.assertAlmostEqual(document.sections[0].page_width.mm, 210, delta=0.1)
         self.assertAlmostEqual(document.sections[0].page_height.mm, 297, delta=0.1)

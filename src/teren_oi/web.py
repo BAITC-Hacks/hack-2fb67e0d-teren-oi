@@ -1,4 +1,4 @@
-"""HTTP adapter for the Tereñ oi browser interface.
+"""HTTP adapter for the Teren Oi browser interface.
 
 This module only translates requests and responses. Parsing, comparison, evidence
 validation and report text remain in the shared domain modules.
@@ -73,7 +73,7 @@ class ExportRequest(BaseModel):
     format: Literal["pdf", "docx"]
 
 
-app = FastAPI(title="Tereñ oi API", version="0.1.0")
+app = FastAPI(title="Teren Oi API", version="0.1.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:5173", "http://127.0.0.1:5173"],

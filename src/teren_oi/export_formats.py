@@ -92,8 +92,8 @@ def _export_docx(blocks: list[tuple[str, str]]) -> bytes:
     from docx.shared import Cm, Pt, RGBColor
 
     document = Document()
-    document.core_properties.title = "Аналитическое заключение Tereñ oi"
-    document.core_properties.author = "Tereñ oi"
+    document.core_properties.title = "Аналитическое заключение Teren Oi"
+    document.core_properties.author = "Teren Oi"
     document.core_properties.subject = "Сопоставление редакций документов и проверяемые источники"
     section = document.sections[0]
     section.page_width = Cm(21)
@@ -107,7 +107,7 @@ def _export_docx(blocks: list[tuple[str, str]]) -> bytes:
     footer = section.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.RIGHT
     footer.paragraph_format.space_after = Pt(0)
-    footer_run = footer.add_run("Tereñ oi · Страница ")
+    footer_run = footer.add_run("Teren Oi · Страница ")
     footer_run.font.name = "Arial"
     footer_run.font.size = Pt(8)
     footer_run.font.color.rgb = RGBColor(100, 116, 139)
@@ -303,8 +303,8 @@ def _export_pdf(blocks: list[tuple[str, str]]) -> bytes:
         rightMargin=19 * mm,
         topMargin=20 * mm,
         bottomMargin=20 * mm,
-        title="Аналитическое заключение Tereñ oi",
-        author="Tereñ oi",
+        title="Аналитическое заключение Teren Oi",
+        author="Teren Oi",
     )
 
     def page_footer(canvas: object, template: object) -> None:
@@ -314,7 +314,7 @@ def _export_pdf(blocks: list[tuple[str, str]]) -> bytes:
         canvas.line(19 * mm, 15 * mm, A4[0] - 19 * mm, 15 * mm)
         canvas.setFont(regular_font, 8)
         canvas.setFillColor(colors.HexColor("#64748B"))
-        canvas.drawString(19 * mm, 10.5 * mm, "Tereñ oi")
+        canvas.drawString(19 * mm, 10.5 * mm, "Teren Oi")
         canvas.drawRightString(A4[0] - 19 * mm, 10.5 * mm, f"Страница {template.page}")
         canvas.restoreState()
 

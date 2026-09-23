@@ -172,7 +172,7 @@ def report_as_markdown(
     ]
 
     lines = [
-        "# Аналитическое заключение Tereñ oi",
+        "# Аналитическое заключение Teren Oi",
         "",
         f"- До: **{escape_markdown(old_name, inline=True)}**",
         f"- После: **{escape_markdown(new_name, inline=True)}**",

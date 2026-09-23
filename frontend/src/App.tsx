@@ -156,13 +156,13 @@ export default function App() {
     <div className="app-shell">
       <a href="#main-content" className="skip-link">Перейти к содержимому</a>
       <aside className="sidebar" aria-label="Навигация по рабочему пространству">
-        <div className="brand"><span className="brand__mark"><Layers3 size={22} strokeWidth={2.1} /></span><span><strong>Tereñ oi</strong><small>DOCUMENT INTELLIGENCE</small></span></div>
+        <div className="brand"><span className="brand__mark"><Layers3 size={22} strokeWidth={2.1} /></span><span><strong>TEREN OI</strong><small>DOCUMENT INTELLIGENCE</small></span></div>
         <div className="sidebar__section-label">РАБОЧЕЕ ПРОСТРАНСТВО</div>
         <div className="sidebar__nav"><span className="sidebar__nav-icon"><Activity size={18} /></span><span>Анализ структуры</span><span className="sidebar__nav-dot" /></div>
         <div className="sidebar__bottom">
           <div className="sidebar__info"><span className="sidebar__info-icon"><ShieldCheck size={17} /></span><span><strong>Проверяемые выводы</strong><small>Каждый вывод связан с источником</small></span></div>
           <div className="sidebar__info sidebar__info--ai"><span className="sidebar__info-icon"><Sparkles size={17} /></span><span><strong>AI-анализ</strong><small>{!connected ? 'Нет связи с сервером' : health?.ai_available ? 'Ключ настроен на сервере' : 'Ключ не задан на сервере'}</small></span></div>
-          <span className="sidebar__version">Tereñ oi · ВЕРСИЯ 0.1</span>
+          <span className="sidebar__version">TEREN OI · ВЕРСИЯ 0.1</span>
         </div>
       </aside>
 
@@ -174,7 +174,7 @@ export default function App() {
         </div></header>
 
         <main id="main-content" className="main-content" tabIndex={-1}>
-          {!showHistory && step === 'import' && <div className="page-intro"><div><span className="eyebrow"><span className="eyebrow__line" />AI-АССИСТЕНТ ДЛЯ АНАЛИЗА ДОКУМЕНТОВ</span><h1>Сравнение редакций<br /><span>с опорой на источники.</span></h1><p>Загрузите две версии положения. Tereñ oi покажет, что изменилось в структуре и функциях, и приложит цитаты для проверки.</p></div><div className="intro-aside"><span className="intro-aside__icon"><Sparkles size={20} /></span><span>От документа<br />к ясному решению</span></div></div>}
+          {!showHistory && step === 'import' && <div className="page-intro"><div><span className="eyebrow"><span className="eyebrow__line" />AI-АССИСТЕНТ ДЛЯ АНАЛИЗА ДОКУМЕНТОВ</span><h1>Сравнение редакций<br /><span>с опорой на источники.</span></h1><p>Загрузите две версии положения. Teren Oi покажет, что изменилось в структуре и функциях, и приложит цитаты для проверки.</p></div><div className="intro-aside"><span className="intro-aside__icon"><Sparkles size={20} /></span><span>От документа<br />к ясному решению</span></div></div>}
           {archiveMessage && <p className="product-notice" role="status">{archiveMessage}</p>}
           {showHistory && <HistoryPanel items={archives} onDelete={deleteArchive} onUndo={undoDelete} canUndo={Boolean(deletedArchive)} />}
           <div hidden={showHistory}>
@@ -188,7 +188,7 @@ export default function App() {
           </AnimatePresence>
           {result && <div hidden={step !== 'results'}><ResultsView key={result.analysis_id} result={result} onSave={saveArchive} onRestart={() => { setStep('import'); setError(null) }} onExport={(format) => void download(format)} exporting={exporting} exportError={exportError} /></div>}
           </div>
-          <footer className="footer"><span>© {new Date().getFullYear()} Tereñ oi</span><span>Анализ документов с опорой на исходные пункты</span></footer>
+          <footer className="footer"><span>© {new Date().getFullYear()} Teren Oi</span><span>Анализ документов с опорой на исходные пункты</span></footer>
         </main>
       </div>
     </div>
