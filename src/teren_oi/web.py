@@ -169,6 +169,35 @@ async def _source_document(file: UploadFile | None, text: str | None, label: str
     return document
 
 
+async def _source_bundle(files: list[UploadFile], text: str | None, label: str, scoped: bool) -> SourceDocument:
+    if not files:
+        document = await _source_document(None, text, label)
+        documents = [document]
+    else:
+        if text and text.strip():
+            raise ApiProblem(400, "AMBIGUOUS_INPUT", "Выберите комплект файлов или текст для каждой редакции.")
+        if len(files) > 8:
+            raise ApiProblem(400, "TOO_MANY_FILES", "Не более 8 файлов на редакцию.")
+        names = [(file.filename or "").replace("\\", "/").rsplit("/", 1)[-1] for file in files]
+        if len({name.casefold() for name in names}) != len(names):
+            raise ApiProblem(400, "DUPLICATE_FILENAME", "В комплекте есть одинаковые имена файлов. Переименуйте их для однозначных источников.")
+        documents = []
+        total = 0
+        for file in files:
+            document = await _source_document(file, None, label)
+            total += sum(len(c.text) for c in document.clauses) + sum(map(len, document.unnumbered_blocks))
+            if total > MAX_TEXT_CHARS:
+                raise ApiProblem(413, "BUNDLE_TOO_LARGE", "Комплект превышает 500 000 символов. Уменьшите число документов.")
+            documents.append(document)
+    if not scoped:
+        return documents[0]
+    # Length-prefixed filename avoids collisions and preserves original clause IDs.
+    clauses = tuple(Clause(f"{len(d.name)}:{d.name} :: {c.clause_id}", c.text, c.source,
+                           f"Пункт {c.clause_id} · {c.location}") for d in documents for c in d.clauses)
+    return SourceDocument("; ".join(d.name for d in documents), clauses,
+                          tuple(block for d in documents for block in d.unnumbered_blocks))
+
+
 def _unit_names(clause: Clause) -> set[str]:
     return {
         " ".join(match.group(1).split()).strip(" -–—")
@@ -376,22 +405,31 @@ def health() -> dict[str, object]:
 async def analyze(
     before_file: UploadFile | None = File(default=None),
     after_file: UploadFile | None = File(default=None),
+    before_files: list[UploadFile] | None = File(default=None),
+    after_files: list[UploadFile] | None = File(default=None),
     before_text: str | None = Form(default=None),
     after_text: str | None = Form(default=None),
     use_ai: bool = Form(default=False),
     demo: bool = Form(default=False),
 ) -> dict[str, object]:
     if demo:
-        if before_file or after_file or before_text or after_text:
+        if before_file or after_file or before_files or after_files or before_text or after_text:
             raise ApiProblem(400, "AMBIGUOUS_INPUT", "Демо запускается без загруженных документов.")
         old_document = _text_document(DEMO_BEFORE, "Демо: до.txt")
         new_document = _text_document(DEMO_AFTER, "Демо: после.txt")
     else:
-        old_document = await _source_document(before_file, before_text, "до")
-        new_document = await _source_document(after_file, after_text, "после")
+        if (before_file and before_files) or (after_file and after_files):
+            raise ApiProblem(400, "AMBIGUOUS_INPUT", "Используйте одиночное поле файла или комплект, не оба одновременно.")
+        old_files = before_files or ([before_file] if before_file else [])
+        new_files = after_files or ([after_file] if after_file else [])
+        scoped = max(len(old_files), len(new_files)) > 1
+        old_document = await _source_bundle(old_files, before_text, "до", scoped)
+        new_document = await _source_bundle(new_files, after_text, "после", scoped)
     omitted_before = len(old_document.unnumbered_blocks)
     omitted_after = len(new_document.unnumbered_blocks)
     warnings: list[str] = []
+    if not demo and scoped:
+        warnings.append("Комплекты: номера пунктов привязаны к имени файла. Для сопоставления изменённого текста по номеру имена соответствующих файлов должны совпадать. Разные имена сопоставляются по однозначному совпадению текста; смысловые переносы проверяет ИИ в пределах охвата.")
     if omitted_before or omitted_after:
         warnings.append(
             "Ненумерованные фрагменты не вошли в автоматическое сравнение "

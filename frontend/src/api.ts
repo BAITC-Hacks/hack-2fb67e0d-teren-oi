@@ -30,10 +30,10 @@ export async function getHealth(signal?: AbortSignal): Promise<HealthResponse> {
 
 export async function analyze(input: AnalysisInput): Promise<AnalysisResponse> {
   const form = new FormData()
-  if (input.beforeFile) form.append('before_file', input.beforeFile)
-  if (input.afterFile) form.append('after_file', input.afterFile)
-  form.append('before_text', input.beforeFile ? '' : input.beforeText)
-  form.append('after_text', input.afterFile ? '' : input.afterText)
+  input.beforeFiles.forEach(file => form.append('before_files', file))
+  input.afterFiles.forEach(file => form.append('after_files', file))
+  form.append('before_text', input.beforeFiles.length ? '' : input.beforeText)
+  form.append('after_text', input.afterFiles.length ? '' : input.afterText)
   form.append('use_ai', String(input.useAi))
   form.append('demo', input.demo ? '1' : '0')
 

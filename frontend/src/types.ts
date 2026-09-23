@@ -114,8 +114,8 @@ export interface AnalysisResponse {
 }
 
 export interface AnalysisInput {
-  beforeFile: File | null
-  afterFile: File | null
+  beforeFiles: File[]
+  afterFiles: File[]
   beforeText: string
   afterText: string
   useAi: boolean

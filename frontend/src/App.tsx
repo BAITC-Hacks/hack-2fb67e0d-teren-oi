@@ -13,7 +13,7 @@ import { readArchives, writeArchives } from './workspace'
 import type { Archive } from './workspace'
 
 type Theme = 'light' | 'dark'
-const emptyDocument = (): UploadedDocument => ({ file: null, text: '', progress: 0, ready: false })
+const emptyDocument = (): UploadedDocument => ({ files: [], text: '', progress: 0, ready: false })
 const defaultExtensions = ['.docx', '.pdf', '.xlsx', '.txt']
 function extensionOf(filename: string): string {
   return `.${filename.split('.').pop()?.toLocaleLowerCase() || ''}`
@@ -60,35 +60,22 @@ export default function App() {
     return supported.map((item) => item.startsWith('.') ? item.toLowerCase() : `.${item.toLowerCase()}`)
   }, [health])
 
-  const updateFile = (side: DocumentSide, file: File) => {
+  const updateFile = (side: DocumentSide, files: File[]) => {
     setError(null)
-    if (!acceptedExtensions.includes(extensionOf(file.name))) {
-      setError(`Формат ${extensionOf(file.name)} не поддерживается. Выберите ${acceptedExtensions.join(', ')}.`)
-      return
+    const combined = [...documents[side].files, ...files]
+    if (combined.length > 8) { setError('Не более 8 файлов на редакцию.'); return }
+    if (new Set(combined.map(f => f.name.toLocaleLowerCase())).size !== combined.length) { setError('Имена файлов в комплекте должны быть уникальны.'); return }
+    for (const file of files) {
+      if (!acceptedExtensions.includes(extensionOf(file.name)) || file.size === 0 || file.size > 12 * 1024 * 1024) {
+        setError(`Проверьте файл ${file.name}: допустимы ${acceptedExtensions.join(', ')}, от 1 байта до 12 МБ.`); return
+      }
     }
-    if (file.size > 12 * 1024 * 1024) {
-      setError('Файл превышает 12 МБ. Выберите документ меньшего размера.')
-      return
-    }
-    if (file.size === 0) {
-      setError('Файл пустой. Выберите документ с текстом или вставьте текст в поле.')
-      return
-    }
-    setDocuments((current) => ({ ...current, [side]: { file, text: '', progress: 0, ready: false } }))
-    const reader = new FileReader()
-    reader.onprogress = (event) => {
-      if (!event.lengthComputable) return
-      const progress = Math.min(99, Math.round(event.loaded / event.total * 100))
-      setDocuments((current) => current[side].file === file ? { ...current, [side]: { ...current[side], progress } } : current)
-    }
-    reader.onload = () => setDocuments((current) => current[side].file === file ? { ...current, [side]: { ...current[side], progress: 100, ready: true } } : current)
-    reader.onerror = () => {
-      setDocuments((current) => current[side].file === file ? { ...current, [side]: emptyDocument() } : current)
-      setError(`Не удалось прочитать файл ${file.name}. Попробуйте выбрать его ещё раз.`)
-    }
-    reader.readAsArrayBuffer(file)
+    setDocuments(current => ({...current, [side]: { files: combined, text: '', ready: true, progress: 100 }}))
   }
-  const removeFile = (side: DocumentSide) => setDocuments((current) => ({ ...current, [side]: emptyDocument() }))
+  const removeFile = (side: DocumentSide, index: number) => setDocuments(current => {
+    const files = current[side].files.filter((_, i) => i !== index)
+    return {...current, [side]: {...current[side], files, ready: files.length > 0}}
+  })
   const updateText = (side: DocumentSide, text: string) => setDocuments((current) => ({ ...current, [side]: { ...current[side], text } }))
   const refreshHealth = () => getHealth().then((data) => { setHealth(data); setConnected(true) }).catch(() => setConnected(false))
 
@@ -116,11 +103,11 @@ export default function App() {
   const runAnalysis = async (demo: boolean) => {
     if (analysisPending.current) return
     setError(null)
-    if (!demo && (!documents.before.file && !documents.before.text.trim() || !documents.after.file && !documents.after.text.trim())) {
+    if (!demo && (!documents.before.files.length && !documents.before.text.trim() || !documents.after.files.length && !documents.after.text.trim())) {
       setError('Добавьте обе версии документа: файл или текст для каждой колонки.')
       return
     }
-    if (!demo && (documents.before.file && !documents.before.ready || documents.after.file && !documents.after.ready)) {
+    if (!demo && (documents.before.files.length && !documents.before.ready || documents.after.files.length && !documents.after.ready)) {
       setError('Подождите, пока файлы подготовятся к анализу.')
       return
     }
@@ -128,8 +115,8 @@ export default function App() {
     setStep('analysis')
     try {
       const data = await analyze({
-        beforeFile: demo ? null : documents.before.file,
-        afterFile: demo ? null : documents.after.file,
+        beforeFiles: demo ? [] : documents.before.files,
+        afterFiles: demo ? [] : documents.after.files,
         beforeText: demo ? '' : documents.before.text.trim(),
         afterText: demo ? '' : documents.after.text.trim(),
         useAi,
