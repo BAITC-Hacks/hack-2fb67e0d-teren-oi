@@ -508,11 +508,7 @@ h1, h2, h3, h4, p { margin-top: 0; }
 .product-actions .button { white-space: normal; text-align: center; overflow-wrap: anywhere; }
 .import-actions .panel-intro { margin-right: auto; }
 .product-notice { padding: 16px; border: 1px solid var(--border-strong); border-radius: 10px; background: var(--accent-soft); color: var(--text); overflow-wrap: anywhere; }
-.review-progress { width: 100%; height: 8px; accent-color: var(--accent); }
-.review-editor { border-block: 1px solid var(--border); margin: 16px 0; padding: 4px 0; }
-.review-editor summary { cursor: pointer; min-height: 44px; padding: 12px 0; color: var(--accent); font-size: 13px; font-weight: 600; }
-.review-editor summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
-.search-panel { display: grid; grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) auto; gap: 16px; align-items: end; }
+.search-panel { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 16px; align-items: end; }
 .search-panel .button { margin-bottom: 12px; }
 .archive-list { display: grid; gap: 16px; margin-top: 22px; }
 .archive-card { border: 1px solid var(--border); background: var(--surface-alt); border-radius: 12px; padding: 20px; min-width: 0; }

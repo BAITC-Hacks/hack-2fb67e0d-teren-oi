@@ -1,15 +1,8 @@
-import type { AnalysisResponse, ClauseChange, Finding } from './types'
+import type { ClauseChange, Finding } from './types'
 
-export type ReviewStatus = 'pending' | 'confirmed' | 'dismissed' | 'followup'
-export interface Review { status: ReviewStatus; note: string }
-export type Reviews = Record<string, Review>
-export const reviewLabels: Record<ReviewStatus, string> = {
-  pending: 'Не рассмотрено', confirmed: 'Подтверждено экспертом',
-  dismissed: 'Отклонено экспертом', followup: 'Нужно уточнение',
-}
 export interface Archive {
   id: string; title: string; savedAt: string; before: string; after: string
-  aiStatus: string; changes: number; reviewed: number; total: number; markdown: string
+  aiStatus: string; changes: number; total: number; markdown: string
 }
 const STORAGE_KEY = 'teren-oi-archive-v1'
 export function readArchives(): Archive[] {
@@ -18,7 +11,7 @@ export function readArchives(): Archive[] {
     if (!Array.isArray(value)) return []
     return value.filter((item): item is Archive => item &&
       ['id', 'title', 'savedAt', 'before', 'after', 'aiStatus', 'markdown'].every(key => typeof item[key] === 'string') &&
-      ['changes', 'reviewed', 'total'].every(key => typeof item[key] === 'number')).slice(0, 8)
+      ['changes', 'total'].every(key => typeof item[key] === 'number')).slice(0, 8)
   } catch { return [] }
 }
 export function writeArchives(items: Archive[]): void {
@@ -34,14 +27,6 @@ export function downloadText(text: string, name: string, type = 'text/markdown;c
   link.href = url; link.download = name
   document.body.append(link); link.click(); link.remove()
   window.setTimeout(() => URL.revokeObjectURL(url), 1000)
-}
-const literal = (text: string) => text.replace(/[\\`*_{}[\]<>#|]/g, '\\$&').replace(/\r?\n/g, ' ')
-export function reviewedReport(result: AnalysisResponse, reviews: Reviews): string {
-  const notes = result.findings.filter(f => reviews[f.id]?.note || (reviews[f.id]?.status && reviews[f.id].status !== 'pending'))
-  if (!notes.length) return result.report_markdown
-  return result.report_markdown + '\n\n## Рецензия эксперта\n\n' +
-    'Пользовательские оценки и заметки. Они не являются выводами модели и не изменяют исходный анализ.\n\n' +
-    notes.map(f => `### ${literal(f.title)}\n\nСтатус: ${reviewLabels[reviews[f.id].status]}\n\n${literal(reviews[f.id].note)}\n`).join('\n')
 }
 export function matchesQuery(item: ClauseChange | Finding, query: string): boolean {
   const needle = query.trim().toLocaleLowerCase('ru')

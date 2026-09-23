@@ -5,8 +5,8 @@ import { ArrowDownToLine, ChevronDown, CircleAlert, FileText, FileType2, FolderO
 import type { AnalysisResponse, ClauseChange, Finding, Unit } from '../types'
 import AiSummary, { aiStatusLabels } from './AiSummary'
 import SemanticAnalysis from './SemanticAnalysis'
-import { changesCsv, downloadText, matchesQuery, reviewedReport, reviewLabels } from '../workspace'
-import type { Archive, Review, Reviews, ReviewStatus } from '../workspace'
+import { changesCsv, downloadText, matchesQuery } from '../workspace'
+import type { Archive } from '../workspace'
 
 const statusLabels: Record<string, string> = {
   added: 'Добавлено', removed: 'Удалено', modified: 'Изменено', unchanged: 'Без изменений',
@@ -127,7 +127,7 @@ function MappingTable({ changes, units, activeUnit, query }: { changes: ClauseCh
   )
 }
 
-function FindingCard({ finding, index, expanded, onToggle, review, onReview }: { finding: Finding; index: number; expanded: boolean; onToggle: () => void; review: Review; onReview: (review: Review) => void }) {
+function FindingCard({ finding, index, expanded, onToggle }: { finding: Finding; index: number; expanded: boolean; onToggle: () => void }) {
   const reducedMotion = useReducedMotion()
   const tone = findingTone(finding.kind)
   return (
@@ -148,10 +148,7 @@ function FindingCard({ finding, index, expanded, onToggle, review, onReview }: {
           </blockquote>) : <p className="no-evidence">Цитаты для этого вывода не предоставлены.</p>}
         </motion.div>}
       </AnimatePresence>
-      <details className="review-editor"><summary>Рецензия эксперта · {reviewLabels[review.status]}</summary>
-        <label className="product-field">Оценка эксперта<select value={review.status} onChange={event => onReview({...review, status: event.target.value as ReviewStatus})}>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        <label className="product-field">Комментарий<textarea rows={2} maxLength={2000} value={review.note} onChange={event => onReview({...review, note: event.target.value})} placeholder="Решение, ответственный или вопрос для уточнения" /></label>
-      </details>
+
     </article>
   )
 }
@@ -165,16 +162,13 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
   exportError: string | null
 }) {
   const [query, setQuery] = useState('')
-  const [reviewFilter, setReviewFilter] = useState('all')
-  const [reviews, setReviews] = useState<Reviews>({})
   const [title, setTitle] = useState(() => `${result.source_names.before} → ${result.source_names.after}`.slice(0, 160))
-  const reviewedCount = result.findings.filter(f => reviews[f.id] && reviews[f.id].status !== 'pending').length
-  const filteredFindings = result.findings.filter(f => matchesQuery(f, query) && (reviewFilter === 'all' || (reviews[f.id]?.status || 'pending') === reviewFilter))
+  const filteredFindings = result.findings.filter(f => matchesQuery(f, query))
   const save = () => onSave({
     id: result.analysis_id, title: title.trim() || 'Сравнение документов', savedAt: new Date().toISOString(),
     before: result.source_names.before, after: result.source_names.after, aiStatus: result.ai.status,
     changes: result.summary.added + result.summary.removed + result.summary.modified,
-    reviewed: reviewedCount, total: result.findings.length, markdown: reviewedReport(result, reviews),
+    total: result.findings.length, markdown: result.report_markdown,
   })
   const [activeUnit, setActiveUnit] = useState<string | null>(null)
   const [visibleFindings, setVisibleFindings] = useState(8)
@@ -185,7 +179,7 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
   const inspectFinding = (id: string) => {
     const index = result.findings.findIndex((finding) => finding.id === id)
     if (index < 0) return
-    setQuery(''); setReviewFilter('all')
+    setQuery('')
     setVisibleFindings((count) => Math.max(count, index + 1))
     setExpandedFindingId(id)
     setScrollTarget(id)
@@ -215,30 +209,17 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
         <MetricCard label="Удалённые пункты" value={result.summary.removed} tone="green" footnote="Точное сравнение · не потеря функции" />
         <MetricCard label="Переформулировано" value={result.summary.modified} tone="blue" footnote="Сопоставленных пунктов" />
       </div>
-      <section className="surface product-panel" aria-label="Инструменты эксперта">
-        <div className="section-heading"><div><span className="eyebrow">ЭКСПЕРТНАЯ ПРОВЕРКА</span><h3>От анализа к решению</h3></div><span className="count-pill">{reviewedCount} / {result.findings.length}</span></div>
-        <p className="panel-intro">Отмечайте решения в карточках замечаний. Оценки эксперта не меняют выводы ИИ и исходные показатели. Чтобы сохранить заметки после закрытия страницы, сохраните заключение в историю или скачайте Markdown с рецензией.</p>
-        <progress className="review-progress" aria-label="Рассмотрено замечаний" max={Math.max(1, result.findings.length)} value={reviewedCount} />
-        <label className="product-field">Название сравнения<input maxLength={160} value={title} onChange={event => setTitle(event.target.value)} /></label>
-        <div className="product-actions">
-          <button className="button button--primary" onClick={save}>Сохранить в историю</button>
-          <button className="button button--secondary" onClick={() => downloadText(reviewedReport(result, reviews), 'teren-oi-review.md')}>Markdown с рецензией</button>
-          <button className="button button--secondary" onClick={() => downloadText(changesCsv(result.changes), 'teren-oi-mapping.csv', 'text/csv;charset=utf-8')}>Вся карта в CSV</button>
-        </div>
-        <p className="field-hint">История сохраняет текст заключения и цитаты в этом браузере только по нажатию кнопки. PDF/Word с рецензией доступны из истории.</p>
-      </section>
-      <nav className="results-nav" aria-label="Разделы заключения"><a href="#findings">Замечания <span>{result.findings.length}</span></a><a href="#mapping">Карта изменений</a><a href="#export">Скачать отчёт</a><a href="#coverage">Охват и ограничения</a></nav>
+      <nav className="results-nav" aria-label="Разделы заключения"><a href="#findings">Замечания <span>{result.findings.length}</span></a><a href="#semantic">Подразделения и функции</a><a href="#mapping">Карта изменений</a><a href="#export">Скачать отчёт</a><a href="#coverage">Охват и ограничения</a></nav>
       <section className="surface product-panel search-panel" aria-label="Поиск по сравнению">
         <label className="product-field">Поиск по замечаниям и точной карте<input type="search" value={query} onChange={event => { setQuery(event.target.value); setVisibleFindings(8) }} placeholder="Функция, цитата, номер пункта…" /></label>
-        <label className="product-field">Статус проверки замечаний<select value={reviewFilter} onChange={event => { setReviewFilter(event.target.value); setVisibleFindings(8) }}><option value="all">Все замечания</option>{Object.entries(reviewLabels).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
-        {(query || reviewFilter !== 'all') && <button className="button button--secondary" onClick={() => {setQuery(''); setReviewFilter('all')}}>Сбросить поиск</button>}
+        {query && <button className="button button--secondary" onClick={() => setQuery('')}>Сбросить поиск</button>}
       </section>
       <section className="findings-section" id="findings" aria-labelledby="findings-heading">
-        <div className="section-heading"><div><span className="eyebrow">ВЫВОДЫ И ИСТОЧНИКИ</span><h3 id="findings-heading">Точки внимания</h3></div><span className="count-pill">{result.findings.length}</span></div>
+        <div className="section-heading"><div><span className="eyebrow">ВЫВОДЫ И ИСТОЧНИКИ</span><h3 id="findings-heading">Потери, дубли и конфликты</h3></div><span className="count-pill">{result.findings.length}</span></div>
         <p className="panel-intro">Выводов ИИ: {aiCount}. Локальных замечаний: {result.findings.length - aiCount}. Откройте источник для проверки. Удалённый пункт сам по себе не доказывает потерю функции.</p>
         {result.findings.length ? <>
           {!filteredFindings.length && <div className="empty-state">По этим условиям замечаний нет. Измените запрос или сбросьте поиск.</div>}
-          <div className="findings-grid">{filteredFindings.slice(0, visibleFindings).map((finding, index) => <FindingCard key={finding.id} finding={finding} index={index} review={reviews[finding.id] || {status: 'pending', note: ''}} onReview={review => setReviews(current => ({...current, [finding.id]: review}))} expanded={expandedFindingId === finding.id} onToggle={() => setExpandedFindingId(expandedFindingId === finding.id ? null : finding.id)} />)}</div>
+          <div className="findings-grid">{filteredFindings.slice(0, visibleFindings).map((finding, index) => <FindingCard key={finding.id} finding={finding} index={index} expanded={expandedFindingId === finding.id} onToggle={() => setExpandedFindingId(expandedFindingId === finding.id ? null : finding.id)} />)}</div>
           <p className="panel-intro" role="status" aria-live="polite">Показано {Math.min(visibleFindings, filteredFindings.length)} из {filteredFindings.length} замечаний по фильтру.</p>
           {visibleFindings < filteredFindings.length && <button type="button" className="button button--secondary" onClick={() => setVisibleFindings((count) => count + 8)}>Показать ещё</button>}
         </> : <div className="all-clear"><FileText size={23} aria-hidden="true" /><div><strong>Замечаний с источниками нет</strong><span>Это не гарантирует отсутствие рисков. Проверьте карту изменений и охват анализа ниже.</span></div></div>}
@@ -257,6 +238,16 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
         </div>
         {exportError && <div className="export-error" role="alert"><CircleAlert size={18} aria-hidden="true" /><span>{exportError}</span></div>}
       </section>
+      <section className="surface product-panel" aria-label="Сохранение заключения">
+        <h3>Сохранить результат</h3>
+        <label className="product-field">Название сравнения<input maxLength={160} value={title} onChange={event => setTitle(event.target.value)} /></label>
+        <div className="product-actions">
+          <button type="button" className="button button--primary" onClick={save}>Сохранить в историю</button>
+          <button type="button" className="button button--secondary" onClick={() => downloadText(result.report_markdown, 'teren-oi-report.md')}>Скачать Markdown</button>
+          <button type="button" className="button button--secondary" onClick={() => downloadText(changesCsv(result.changes), 'teren-oi-mapping.csv', 'text/csv;charset=utf-8')}>Вся карта в CSV</button>
+        </div>
+        <p className="field-hint">Сохраняется исходное заключение с цитатами. История доступна только в этом браузере; исходные файлы в неё не входят.</p>
+      </section>
       <section className="coverage-panel surface" id="coverage" aria-labelledby="coverage-heading">
         <div className="section-heading"><div><span className="eyebrow">ПРЕДЕЛЫ ПРОВЕРКИ</span><h3 id="coverage-heading">Охват и ограничения</h3></div><ShieldCheck size={20} aria-hidden="true" /></div>
         <div className="coverage-grid">{(['before', 'after'] as const).map((side) => <div key={side}><strong>{side === 'before' ? 'Исходная редакция' : 'Новая редакция'}</strong><p>Распознано пунктов: {result.coverage[side].clauses}</p><p>Блоков вне нумерации: {result.coverage[side].unnumbered_blocks}{result.coverage[side].synthetic_ids ? ' · назначены условные номера' : ''}</p></div>)}</div>
@@ -268,7 +259,7 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
         </details>}
         {result.warnings?.map((warning, index) => <div className="ai-warning" key={`${warning}-${index}`}><CircleAlert size={18} aria-hidden="true" /><span>{warning}</span></div>)}
         <p className="panel-intro">Точное совпадение текста помогает заметить перенос пункта. Смысловая перенумерация, разделение и объединение функций могут требовать ручной проверки. Наличие точной цитаты подтверждает источник, но не доказывает вывод модели.</p>
-        <p className="panel-intro">Исходный отчёт хранится на сервере до часа. Для доступа после перезапуска сохраните заключение в локальную историю или скачайте Markdown. Кнопки PDF/Word выше выгружают исходный анализ без пользовательской рецензии.</p>
+        <p className="panel-intro">Исходный отчёт хранится на сервере до часа. Для доступа после перезапуска сохраните заключение в локальную историю или скачайте Markdown. PDF, Word и Markdown содержат один и тот же результат анализа.</p>
       </section>
     </div>
   )

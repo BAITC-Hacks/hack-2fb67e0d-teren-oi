@@ -26,7 +26,7 @@ export default function HistoryPanel({ items, onDelete, onUndo, canUndo }: {
     {!filtered.length && <div className="empty-state">{items.length ? 'Ничего не найдено. Измените поисковый запрос.' : 'Здесь появятся сохранённые сравнения. После анализа нажмите «Сохранить в историю».'}</div>}
     <div className="archive-list">{filtered.map(item => <article className="archive-card" key={item.id}>
       <h3>{item.title}</h3><p className="panel-intro">{item.before} → {item.after}</p>
-      <p className="panel-intro">{new Date(item.savedAt).toLocaleString('ru-RU')} · Изменений: {item.changes} · Рассмотрено: {item.reviewed}/{item.total}</p>
+      <p className="panel-intro">{new Date(item.savedAt).toLocaleString('ru-RU')} · Изменений: {item.changes} · Замечаний: {item.total}</p>
       <p className="panel-intro">ИИ при исходном анализе: {aiStatusLabels[item.aiStatus as keyof typeof aiStatusLabels] || item.aiStatus}. Скачивание не запускает модель повторно.</p>
       <div className="product-actions">
         <button className="button button--secondary" disabled={busy !== null} onClick={() => void download(item, 'pdf')}>{busy === item.id ? 'Подготовка…' : 'PDF'}</button>
