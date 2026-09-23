@@ -38,23 +38,58 @@ class Comparison:
     unchanged: tuple[Change, ...]
 
 
+DocumentLabel = Literal["до", "после"]
+Confidence = Literal["low", "medium", "high", "низкая", "средняя", "высокая"]
+DepartmentStatus = Literal["created", "retained", "reorganized", "removed"]
+FunctionStatus = Literal["retained", "changed", "reassigned", "lost"]
+FindingKind = Literal[
+    "possible_loss",
+    "possible_duplication",
+    "possible_conflict",
+    # Legacy kinds keep the existing web and report adapters compatible.
+    "потенциальная потеря функции",
+    "потенциальное дублирование",
+    "перераспределение ответственности",
+    "другое изменение",
+    "потенциальный конфликт интересов",
+]
+
+
 class Citation(BaseModel):
-    document_label: Literal["до", "после"]
-    clause_id: str
+    document_label: DocumentLabel
+    clause_id: str = Field(min_length=1)
     quote: str = Field(min_length=1)
 
 
+class DepartmentChange(BaseModel):
+    name_before: str | None = Field(default=None, min_length=1)
+    name_after: str | None = Field(default=None, min_length=1)
+    status: DepartmentStatus
+    citations: list[Citation] = Field(min_length=1)
+
+
+class FunctionMapping(BaseModel):
+    old_function: str = Field(min_length=1)
+    new_function: str | None = Field(default=None, min_length=1)
+    old_department: str | None = Field(default=None, min_length=1)
+    new_department: str | None = Field(default=None, min_length=1)
+    status: FunctionStatus
+    confidence: Confidence
+    citations: list[Citation] = Field(min_length=1)
+
+
 class Finding(BaseModel):
-    kind: Literal["потенциальная потеря функции", "потенциальное дублирование",
-                  "перераспределение ответственности", "другое изменение"]
+    kind: FindingKind
     title: str = Field(min_length=1)
     explanation: str = Field(min_length=1)
-    confidence: Literal["низкая", "средняя", "высокая"]
+    confidence: Confidence
     citations: list[Citation] = Field(min_length=1)
 
 
 class AnalysisResponse(BaseModel):
-    summary: str
+    summary: str = Field(min_length=1)
+    department_changes: list[DepartmentChange]
+    function_mappings: list[FunctionMapping]
     findings: list[Finding]
 
 
