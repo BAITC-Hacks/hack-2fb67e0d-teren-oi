@@ -18,6 +18,7 @@ from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .analyzer import AnalysisError, analyze_with_metadata, evidence_coverage, evidence_omissions
@@ -503,3 +504,10 @@ def export(payload: ExportRequest) -> Response:
         media_type=media_type,
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# The launcher/container serves UI and API from one origin. Development with
+# Vite on 5173 remains available. Mount last so API routes keep their priority.
+UI_DIST = Path(os.getenv("TEREN_UI_DIST", str(Path(__file__).resolve().parents[2] / "frontend" / "dist")))
+if (UI_DIST / "index.html").is_file():
+    app.mount("/", StaticFiles(directory=UI_DIST, html=True), name="frontend")
