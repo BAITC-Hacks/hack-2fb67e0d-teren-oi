@@ -106,10 +106,11 @@ function DocumentInput({
 }
 
 
-export default function ImportView({ documents, acceptedExtensions, health, useAi, onAiChange: setUseAi, onFile: updateFile, onRemove: removeFile, onText: updateText, onAnalyze: runAnalysis }: {
+export default function ImportView({ documents, acceptedExtensions, health, connected, useAi, onAiChange: setUseAi, onFile: updateFile, onRemove: removeFile, onText: updateText, onAnalyze: runAnalysis }: {
   documents: Documents
   acceptedExtensions: string[]
   health: HealthResponse | null
+  connected: boolean
   useAi: boolean
   onAiChange: (value: boolean) => void
   onFile: (side: DocumentSide, file: File) => void
@@ -117,12 +118,32 @@ export default function ImportView({ documents, acceptedExtensions, health, useA
   onText: (side: DocumentSide, text: string) => void
   onAnalyze: (demo: boolean) => Promise<void>
 }) {
+  const beforeReady = documents.before.file ? documents.before.ready : Boolean(documents.before.text.trim())
+  const afterReady = documents.after.file ? documents.after.ready : Boolean(documents.after.text.trim())
+  const ready = beforeReady && afterReady
+  const aiAvailable = connected && Boolean(health?.ai_available)
   return <>
-              <div className="section-title-row"><div><span className="eyebrow">ШАГ 01 / ИСХОДНЫЕ ДАННЫЕ</span><h2>Добавьте документы для сравнения</h2><p>Поддерживаются файлы Word, PDF, Excel и обычный текст. Для анализа нужны обе редакции.</p></div><button type="button" className="demo-button" onClick={() => void runAnalysis(true)}><Sparkles size={17} />Загрузить контрольный демо-комплект Казахтелеком <ArrowRight size={16} /></button></div>
+              <div className="section-title-row"><div><span className="eyebrow">ШАГ 01 / ИСХОДНЫЕ ДАННЫЕ</span><h2>Добавьте документы для сравнения</h2><p>Word, PDF с текстовым слоем, Excel или TXT, до 12 МБ на файл.</p></div></div>
+              <div className="demo-callout"><div><strong>Посмотрите, как это работает</strong><p>Демо за один клик: две редакции, изменения и цитаты. Выбранный ниже режим ИИ применяется и к демо.</p></div><button type="button" className="demo-button" onClick={() => void runAnalysis(true)}><Sparkles size={18} aria-hidden="true" /><span>Загрузить контрольный демо-комплект Казахтелеком</span><ArrowRight size={17} aria-hidden="true" /></button></div>
               <div className="document-grid">
-                <DocumentInput side="before" number="01" title="Исходная редакция" subtitle="Документ до изменений" value={documents.before} accept={acceptedExtensions.join(',')} onFile={updateFile} onRemove={removeFile} onText={updateText} />
-                <DocumentInput side="after" number="02" title="Новая редакция" subtitle="Документ после изменений" value={documents.after} accept={acceptedExtensions.join(',')} onFile={updateFile} onRemove={removeFile} onText={updateText} />
+                <DocumentInput side="before" number="01" title="До изменений" subtitle="Исходная редакция документа" value={documents.before} accept={acceptedExtensions.join(',')} onFile={updateFile} onRemove={removeFile} onText={updateText} />
+                <DocumentInput side="after" number="02" title="После изменений" subtitle="Новая редакция документа" value={documents.after} accept={acceptedExtensions.join(',')} onFile={updateFile} onRemove={removeFile} onText={updateText} />
               </div>
-              <div className="analysis-toolbar"><div className="analysis-toolbar__note"><ShieldCheck size={18} /><span>Демо-комплект синтетический и не является официальным документом Казахтелекома.</span></div><div className="analysis-toolbar__controls"><label className={`ai-switch ${!health?.ai_available ? 'is-disabled' : ''}`}><input type="checkbox" checked={useAi && Boolean(health?.ai_available)} disabled={!health?.ai_available} onChange={(event) => setUseAi(event.target.checked)} /><span className="ai-switch__track" /><span>AI-анализ <small>{health?.ai_available ? 'Доступен' : 'Нужен API-ключ на сервере'}</small></span></label><button type="button" className="button button--primary" onClick={() => void runAnalysis(false)}><Activity size={18} />Запустить анализ структуры<ArrowRight size={17} /></button></div></div>
+              <div className="analysis-toolbar">
+                <div className="analysis-toolbar__controls">
+                  <div className={`ai-option ${useAi ? 'is-enabled' : ''}`}>
+                    <label className={`ai-switch ${!aiAvailable ? 'is-disabled' : ''}`}>
+                      <input type="checkbox" role="switch" aria-describedby="ai-mode-description" checked={useAi} disabled={!aiAvailable && !useAi} onChange={(event) => setUseAi(event.target.checked)} />
+                      <span className="ai-switch__track" /><span>AI-анализ <small>{!connected ? 'Сервер недоступен' : health?.ai_available ? `${useAi ? 'Включён' : 'Выключен'} · ${health.model}` : 'Нужен API-ключ на сервере'}</small></span>
+                    </label>
+                    <p id="ai-mode-description">{useAi ? 'Текст документов будет отправлен в OpenAI API для смысловой проверки.' : 'Сейчас выбрано локальное сравнение. Включите ИИ для проверки смысла изменений.'}</p>
+                  </div>
+                  <div className="analysis-action">
+                    <button type="button" className="button button--primary" disabled={!ready} aria-describedby="analyze-hint" onClick={() => void runAnalysis(false)}><Activity size={18} aria-hidden="true" /><span>Запустить анализ структуры</span><ArrowRight size={17} aria-hidden="true" /></button>
+                    <p id="analyze-hint">{ready ? 'Обе редакции готовы к сравнению' : 'Добавьте обе редакции, чтобы начать'}</p>
+                  </div>
+                </div>
+                <div className="analysis-toolbar__note"><ShieldCheck size={18} aria-hidden="true" /><span>Демо-комплект синтетический и не является официальным документом Казахтелекома.</span></div>
+              </div>
   </>
 }

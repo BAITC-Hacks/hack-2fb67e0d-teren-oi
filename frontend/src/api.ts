@@ -47,13 +47,13 @@ export async function analyze(input: AnalysisInput): Promise<AnalysisResponse> {
   return response.json() as Promise<AnalysisResponse>
 }
 
-export async function exportReport(reportMarkdown: string, format: 'pdf' | 'docx'): Promise<void> {
+export async function exportReport(analysisId: string, format: 'pdf' | 'docx'): Promise<void> {
   let response: Response
   try {
     response = await fetch(`${baseUrl}/api/export`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ report_markdown: reportMarkdown, format }),
+      body: JSON.stringify({ analysis_id: analysisId, format }),
     })
   } catch {
     throw new Error('Не удалось связаться с сервером экспорта.')

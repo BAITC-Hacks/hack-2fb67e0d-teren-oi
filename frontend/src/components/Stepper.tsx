@@ -15,7 +15,7 @@ export default function Stepper({ step, hasResult, goTo }: { step: Step; hasResu
           key={item.key}
           type="button"
           className={`stepper__item ${index === current ? 'is-active' : ''} ${index < current ? 'is-complete' : ''}`}
-          disabled={item.key === 'analysis' || (item.key === 'results' && !hasResult)}
+          disabled={step === 'analysis' || item.key === 'analysis' || (item.key === 'results' && !hasResult)}
           aria-current={index === current ? 'step' : undefined}
           onClick={() => goTo(item.key)}
         >

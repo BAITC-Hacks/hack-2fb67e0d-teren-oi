@@ -66,7 +66,8 @@ def read_pdf(data: bytes, name: str) -> SourceDocument:
 
     if not blocks:
         raise DocumentReadError(
-            f"В «{name}» не найден извлекаемый текст. OCR is not supported in the MVP."
+            f"В «{name}» не найден извлекаемый текст. Распознавание сканов (OCR) пока недоступно. "
+            "Загрузите PDF с выделяемым текстом, DOCX или вставьте распознанный текст."
         )
     return parse_blocks(blocks, name)
 

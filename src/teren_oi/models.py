@@ -39,9 +39,9 @@ class Comparison:
 
 
 class Citation(BaseModel):
-    document_label: Literal["до", "после"]
-    clause_id: str
-    quote: str = Field(min_length=1)
+    document_label: Literal["до", "после"] = Field(description="Точная метка document_label цитируемого фрагмента.")
+    clause_id: str = Field(description="Скопируй clause_id цитируемого фрагмента, например 2.4; не порядковый номер записи.")
+    quote: str = Field(min_length=1, description="Непрерывная дословная подстрока text из того же фрагмента. Без своих кавычек, номера и многоточий.")
 
 
 class Finding(BaseModel):

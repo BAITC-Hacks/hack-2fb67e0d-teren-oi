@@ -8,14 +8,13 @@ from __future__ import annotations
 
 import html
 import os
-import re
+from string import punctuation
 from io import BytesIO
 from pathlib import Path
 from threading import Lock
 from typing import Literal
 
 _MAX_REPORT_LENGTH = 1_000_000
-_BOLD_PARTS = re.compile(r"(\*\*.*?\*\*)")
 _FONT_LOCK = Lock()
 _PDF_FONT_NAMES: tuple[str, str] | None = None
 
@@ -42,31 +41,85 @@ def _lines(report_markdown: str) -> list[tuple[str, str]]:
     return blocks
 
 
+def _inline_runs(markdown_text: str) -> list[tuple[str, bool]]:
+    """Parse authored bold and literal escapes without reinterpreting source text.
+
+    Escapes are decoded during scanning, so an escaped ``*`` never becomes a
+    bold delimiter on a later pass. An unmatched authored delimiter stays literal.
+    """
+    tokens: list[tuple[str, bool]] = []
+    text: list[str] = []
+    index = 0
+    while index < len(markdown_text):
+        character = markdown_text[index]
+        if character == "\\" and index + 1 < len(markdown_text) and markdown_text[index + 1] in punctuation:
+            text.append(markdown_text[index + 1])
+            index += 2
+        elif markdown_text.startswith("**", index):
+            if text:
+                tokens.append(("".join(text), False))
+                text = []
+            tokens.append(("**", True))
+            index += 2
+        else:
+            text.append(character)
+            index += 1
+    if text:
+        tokens.append(("".join(text), False))
+    markers = [index for index, (_, marker) in enumerate(tokens) if marker]
+    paired = set(markers[:len(markers) - len(markers) % 2])
+    runs: list[tuple[str, bool]] = []
+    bold = False
+    for index, (value, marker) in enumerate(tokens):
+        if marker and index in paired:
+            bold = not bold
+        else:
+            runs.append((value, bold))
+    return runs
+
+
 def _add_docx_runs(paragraph: object, markdown_text: str) -> None:
-    for part in _BOLD_PARTS.split(markdown_text):
-        if not part:
-            continue
-        is_bold = part.startswith("**") and part.endswith("**")
-        value = part[2:-2] if is_bold else part
+    for value, is_bold in _inline_runs(markdown_text):
         run = paragraph.add_run(value)
         run.bold = is_bold
 
 
 def _export_docx(blocks: list[tuple[str, str]]) -> bytes:
     from docx import Document
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml import OxmlElement
+    from docx.oxml.ns import qn
     from docx.shared import Cm, Pt, RGBColor
 
     document = Document()
+    document.core_properties.title = "Аналитическое заключение Teren Oi"
+    document.core_properties.author = "Teren Oi"
+    document.core_properties.subject = "Сопоставление редакций документов и проверяемые источники"
     section = document.sections[0]
+    section.page_width = Cm(21)
+    section.page_height = Cm(29.7)
     section.top_margin = Cm(2)
     section.bottom_margin = Cm(2)
     section.left_margin = Cm(2.2)
     section.right_margin = Cm(2.2)
+    section.footer_distance = Cm(1)
+
+    footer = section.footer.paragraphs[0]
+    footer.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    footer.paragraph_format.space_after = Pt(0)
+    footer_run = footer.add_run("Teren Oi · Страница ")
+    footer_run.font.name = "Arial"
+    footer_run.font.size = Pt(8)
+    footer_run.font.color.rgb = RGBColor(100, 116, 139)
+    page_field = OxmlElement("w:fldSimple")
+    page_field.set(qn("w:instr"), "PAGE")
+    footer._p.append(page_field)
 
     normal = document.styles["Normal"]
     normal.font.name = "Arial"
     normal.font.size = Pt(10)
     normal.paragraph_format.space_after = Pt(7)
+    normal.paragraph_format.widow_control = True
     for heading_name, size in (("Heading 1", 17), ("Heading 2", 13), ("Heading 3", 11)):
         style = document.styles[heading_name]
         style.font.name = "Arial"
@@ -74,6 +127,7 @@ def _export_docx(blocks: list[tuple[str, str]]) -> bytes:
         style.font.color.rgb = RGBColor(31, 51, 84)
         style.paragraph_format.space_before = Pt(12)
         style.paragraph_format.space_after = Pt(6)
+        style.paragraph_format.keep_with_next = True
 
     for kind, value in blocks:
         if kind.startswith("heading"):
@@ -154,11 +208,8 @@ def _pdf_fonts() -> tuple[str, str]:
 
 def _pdf_markup(markdown_text: str) -> str:
     parts = []
-    for part in _BOLD_PARTS.split(markdown_text):
-        if not part:
-            continue
-        is_bold = part.startswith("**") and part.endswith("**")
-        escaped = html.escape(part[2:-2] if is_bold else part, quote=False)
+    for value, is_bold in _inline_runs(markdown_text):
+        escaped = html.escape(value, quote=False)
         parts.append(f"<b>{escaped}</b>" if is_bold else escaped)
     return "".join(parts)
 
@@ -255,7 +306,19 @@ def _export_pdf(blocks: list[tuple[str, str]]) -> bytes:
         title="Аналитическое заключение Teren Oi",
         author="Teren Oi",
     )
-    document.build(story)
+
+    def page_footer(canvas: object, template: object) -> None:
+        canvas.saveState()
+        canvas.setStrokeColor(colors.HexColor("#E2E8F0"))
+        canvas.setLineWidth(0.5)
+        canvas.line(19 * mm, 15 * mm, A4[0] - 19 * mm, 15 * mm)
+        canvas.setFont(regular_font, 8)
+        canvas.setFillColor(colors.HexColor("#64748B"))
+        canvas.drawString(19 * mm, 10.5 * mm, "Teren Oi")
+        canvas.drawRightString(A4[0] - 19 * mm, 10.5 * mm, f"Страница {template.page}")
+        canvas.restoreState()
+
+    document.build(story, onFirstPage=page_footer, onLaterPages=page_footer)
     return output.getvalue()
 
 

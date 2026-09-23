@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactNode } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
-import { ArrowDownToLine, CheckCircle2, ChevronDown, CircleAlert, FileText, FileType2, FolderOpen, Layers3, Plus, ShieldCheck } from 'lucide-react'
+import { ArrowDownToLine, ChevronDown, CircleAlert, FileText, FileType2, FolderOpen, Layers3, Plus, ShieldCheck } from 'lucide-react'
 import type { AnalysisResponse, ClauseChange, Finding, Unit } from '../types'
-import AiSummary from './AiSummary'
+import AiSummary, { aiStatusLabels } from './AiSummary'
 
 const statusLabels: Record<string, string> = {
   added: 'Добавлено', removed: 'Удалено', modified: 'Изменено', unchanged: 'Без изменений',
@@ -41,7 +41,7 @@ function UnitsPanel({ units, active, onSelect }: { units: Unit[]; active: string
   return (
     <section className="surface units-panel" aria-labelledby="units-heading">
       <div className="section-heading"><div><span className="eyebrow">СТРУКТУРА</span><h3 id="units-heading">Подразделения</h3></div><span className="count-pill">{units.length}</span></div>
-      <p className="panel-intro">Выберите подразделение, чтобы отфильтровать таблицу пунктов.</p>
+      <p className="panel-intro">Статусы оценены по упоминаниям в пунктах и требуют проверки. Выберите подразделение для фильтрации карты изменений.</p>
       <div className="unit-list">
         <button type="button" className={`unit-item ${active === null ? 'is-selected' : ''}`} onClick={() => onSelect(null)} aria-pressed={active === null}>
           <span className="unit-item__symbol"><Layers3 size={16} /></span><span className="unit-item__name">Все подразделения</span><span className="unit-item__arrow">→</span>
@@ -84,37 +84,38 @@ function MappingTable({ changes, units, activeUnit }: { changes: ClauseChange[];
   }, [visibleCount, reducedMotion])
   const selectedUnit = units.find((unit) => unit.name === activeUnit)
   const visible = changes.filter((change) =>
-    (filter === 'all' || change.status === filter) && (!selectedUnit || selectedUnit.clause_ids.includes(change.clause_id)),
+    (filter === 'all' || change.status === filter) && (!selectedUnit || selectedUnit.change_ids.includes(change.id)),
   )
   const shown = visible.slice(0, visibleCount)
   const filters = [
-    ['all', 'Все'], ['modified', 'Изменено'], ['removed', 'Удалено'], ['added', 'Добавлено'],
+    ['all', 'Все'], ['modified', 'Изменено'], ['removed', 'Удалено'], ['added', 'Добавлено'], ['unchanged', 'Без изменений'],
   ]
   return (
     <section className="surface mapping-panel" id="mapping" aria-labelledby="mapping-heading">
       <div className="section-heading"><div><span className="eyebrow">СОПОСТАВЛЕНИЕ</span><h3 id="mapping-heading">Карта изменений</h3></div><span className="count-pill">{visible.length}</span></div>
+      {activeUnit && <p className="panel-intro">Подразделение: <strong>{activeUnit}</strong></p>}
       <div className="filter-bar" aria-label="Фильтр статуса">
         {filters.map(([key, label]) => <button key={key} type="button" className={filter === key ? 'is-active' : ''} onClick={() => setFilter(key)} aria-pressed={filter === key}>{label}</button>)}
       </div>
       {visible.length ? (
-        <div className="table-scroll" ref={tableRef}><table className="mapping-table">
+        <><p className="table-scroll-hint" id="mapping-scroll-hint">Таблицу можно прокручивать вправо. Нажмите на номер пункта, чтобы увидеть его источник.</p><div className="table-scroll" ref={tableRef} tabIndex={0} role="region" aria-label="Таблица сравнения редакций" aria-describedby="mapping-scroll-hint"><table className="mapping-table">
           <thead><tr><th scope="col">Пункт</th><th scope="col">Было</th><th scope="col">Стало</th><th scope="col">Статус</th></tr></thead>
           <tbody>{shown.map((change, index) => {
             const key = `${change.clause_id}-${index}`
             const isOpen = expanded === key
             return [
               <tr key={key} className="mapping-row" data-row-index={index}>
-                <td><button type="button" className="clause-link" aria-expanded={isOpen} aria-controls={`source-${index}`} onClick={() => setExpanded(isOpen ? null : key)}>{change.clause_id || '—'} <ChevronDown size={14} aria-hidden="true" /></button></td>
+                <td><button type="button" className="clause-link" aria-expanded={isOpen} aria-controls={`source-${index}`} onClick={() => setExpanded(isOpen ? null : key)}>{change.before_clause_id && change.after_clause_id && change.before_clause_id !== change.after_clause_id ? `${change.before_clause_id} → ${change.after_clause_id}` : change.clause_id || '—'} <ChevronDown size={14} aria-hidden="true" /></button>{change.match_method === 'exact_text' && <small className="mapping-match">Совпадение текста</small>}</td>
                 <td className={!change.before ? 'cell-empty' : ''}>{change.before || '—'}</td>
                 <td className={!change.after ? 'cell-empty' : ''}>{change.after || '—'}</td>
                 <td><Badge tone={statusTone(change.status)}>{statusLabels[change.status] || change.status}</Badge></td>
               </tr>,
               isOpen && <tr key={`${key}-source`} id={`source-${index}`} className="mapping-source-row"><td colSpan={4}>
-                <div className="mapping-sources"><span><strong>Источник «до»</strong>{change.before_source || 'Нет пункта в исходном документе'}</span><span><strong>Источник «после»</strong>{change.after_source || 'Нет пункта в новой редакции'}</span></div>
+                <div className="mapping-sources"><span><strong>До · {change.before_clause_id || 'Нет пункта'}</strong>{change.before_source || 'Нет пункта в исходном документе'}</span><span><strong>После · {change.after_clause_id || 'Нет пункта'}</strong>{change.after_source || 'Нет пункта в новой редакции'}</span></div>
               </td></tr>,
             ]
         })}</tbody>
-        </table></div>
+        </table></div></>
       ) : <div className="empty-state">По выбранному фильтру пунктов нет. Попробуйте другой статус или подразделение.</div>}
       {visible.length > 0 && <p className="panel-intro" role="status" aria-live="polite">Показано {shown.length} из {visible.length} пунктов.</p>}
       {shown.length < visible.length && <button type="button" className="button button--secondary" onClick={() => { revealFrom.current = shown.length; setVisibleCount((count) => count + 40) }}>Показать ещё</button>}
@@ -122,78 +123,108 @@ function MappingTable({ changes, units, activeUnit }: { changes: ClauseChange[];
   )
 }
 
-function FindingCard({ finding, index }: { finding: Finding; index: number }) {
-  const [expanded, setExpanded] = useState(false)
+function FindingCard({ finding, index, expanded, onToggle }: { finding: Finding; index: number; expanded: boolean; onToggle: () => void }) {
   const reducedMotion = useReducedMotion()
   const tone = findingTone(finding.kind)
   return (
-    <article className={`finding-card finding-card--${tone}`}>
+    <article id={`finding-${finding.id}`} tabIndex={-1} className={`finding-card finding-card--${tone}`}>
       <div className="finding-card__top"><span className={`finding-icon finding-icon--${tone}`}><CircleAlert size={19} aria-hidden="true" /></span><Badge tone={tone}>{finding.kind}</Badge><span className="finding-card__index">{String(index + 1).padStart(2, '0')}</span></div>
+      <span className="finding-origin">{finding.origin === 'ai' ? 'Вывод ИИ · цитаты проверены' : 'Локальное сравнение · требует оценки эксперта'}</span>
       <h4>{finding.title}</h4>
       <p>{finding.explanation}</p>
-      <button type="button" className="evidence-toggle" aria-expanded={expanded} aria-controls={`finding-evidence-${index}`} onClick={() => setExpanded(!expanded)}>
-        <span>Показать источники <span className="evidence-count">{finding.citations?.length || 0}</span></span><ChevronDown size={17} className={expanded ? 'rotated' : ''} aria-hidden="true" />
+      <button type="button" className="evidence-toggle" aria-expanded={expanded} aria-controls={`finding-evidence-${finding.id}`} onClick={onToggle}>
+        <span>{expanded ? 'Скрыть источники' : 'Показать источники'} <span className="evidence-count">{finding.citations?.length || 0}</span></span><ChevronDown size={17} className={expanded ? 'rotated' : ''} aria-hidden="true" />
       </button>
       <AnimatePresence initial={false}>
-        {expanded && <motion.div id={`finding-evidence-${index}`} className="evidence-content" initial={reducedMotion ? false : { height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={reducedMotion ? undefined : { height: 0, opacity: 0 }} transition={{ duration: reducedMotion ? 0 : 0.24 }}>
+        {expanded && <motion.div id={`finding-evidence-${finding.id}`} className="evidence-content" initial={reducedMotion ? false : { height: 0, opacity: 0 }} animate={{ height: 'auto', opacity: 1 }} exit={reducedMotion ? undefined : { height: 0, opacity: 0 }} transition={{ duration: reducedMotion ? 0 : 0.24 }}>
           {finding.citations?.length ? finding.citations.map((citation, citationIndex) => <blockquote key={`${citation.clause_id}-${citationIndex}`}>
             <span>{citation.source ? `${citation.source} · ` : ''}{citation.document_label} · {citation.clause_id}{citation.location ? ` · ${citation.location}` : ''}</span>
             <p>«{citation.quote}»</p>
           </blockquote>) : <p className="no-evidence">Цитаты для этого вывода не предоставлены.</p>}
-          {finding.confidence != null && <p className="confidence">Уверенность: {String(finding.confidence)}</p>}
         </motion.div>}
       </AnimatePresence>
     </article>
   )
 }
 
-export default function ResultsView({ result, aiUsed, onRestart, onExport, exporting }: {
+export default function ResultsView({ result, onRestart, onExport, exporting }: {
   result: AnalysisResponse
-  aiUsed: boolean
   onRestart: () => void
   onExport: (format: 'pdf' | 'docx') => void
   exporting: 'pdf' | 'docx' | null
 }) {
   const [activeUnit, setActiveUnit] = useState<string | null>(null)
   const [visibleFindings, setVisibleFindings] = useState(8)
-  const riskCount = result.summary.loss_count + result.summary.duplicate_count
+  const [expandedFindingId, setExpandedFindingId] = useState<string | null>(null)
+  const [scrollTarget, setScrollTarget] = useState<string | null>(null)
+  const reducedMotion = useReducedMotion()
+  const aiCount = result.findings.filter((finding) => finding.origin === 'ai').length
+  const inspectFinding = (id: string) => {
+    const index = result.findings.findIndex((finding) => finding.id === id)
+    if (index < 0) return
+    setVisibleFindings((count) => Math.max(count, index + 1))
+    setExpandedFindingId(id)
+    setScrollTarget(id)
+  }
+  useEffect(() => {
+    if (!scrollTarget) return
+    const frame = requestAnimationFrame(() => {
+      const card = document.getElementById(`finding-${scrollTarget}`)
+      card?.focus({ preventScroll: true })
+      card?.scrollIntoView({ behavior: reducedMotion ? 'instant' : 'smooth', block: 'start' })
+      setScrollTarget(null)
+    })
+    return () => cancelAnimationFrame(frame)
+  }, [scrollTarget, reducedMotion])
+
   return (
     <div className="results-view">
       <div className="results-header">
-        <div><span className="eyebrow"><span className="eyebrow__line" />АНАЛИЗ ЗАВЕРШЁН</span><h2>Аналитическое заключение</h2><p>Сравнение <strong>{result.source_names.before}</strong> и <strong>{result.source_names.after}</strong></p></div>
-        <button type="button" className="button button--secondary" onClick={onRestart}><Plus size={17} />Новый анализ</button>
+        <div><span className="eyebrow"><span className="eyebrow__line" />СРАВНЕНИЕ ГОТОВО</span><h2>Аналитическое заключение</h2><p><strong>{result.source_names.before}</strong><span className="results-file-arrow"> → </span><strong>{result.source_names.after}</strong></p></div>
+        <button type="button" className="button button--secondary" onClick={onRestart}><Plus size={17} aria-hidden="true" />К документам</button>
       </div>
-      {result.ai_error && <div className="ai-warning" role="status"><CircleAlert size={18} aria-hidden="true" /><span><strong>Локальное сравнение готово, но AI-проверка не завершилась.</strong> {result.ai_error}</span></div>}
-      {result.warnings?.map((warning, index) => <div className="ai-warning" role="status" key={`${warning}-${index}`}><CircleAlert size={18} aria-hidden="true" /><span>{warning}</span></div>)}
-      <AiSummary result={result} aiUsed={aiUsed} />
+      <AiSummary result={result} onInspect={inspectFinding} />
       <div className="metric-grid">
-        <MetricCard label="Изменено подразделений" value={result.summary.units_changed} tone="blue" footnote="Структурные изменения" />
+        <MetricCard label="Изменено подразделений" value={result.summary.units_changed} tone="blue" footnote="По упоминаниям в пунктах" />
         <MetricCard label="Потенциальные потери" value={result.summary.loss_count} tone="red" footnote="Требуют проверки" />
-        <MetricCard label="Возможные дубли" value={result.summary.duplicate_count} tone="amber" footnote={aiUsed ? 'AI-проверка выполнена' : result.ai_error ? 'AI-проверка не завершилась' : 'AI-проверка выключена'} />
-        <MetricCard label="Изменено пунктов" value={result.summary.modified} tone="green" footnote="В двух редакциях" />
+        <MetricCard label="Возможные дубли" value={result.summary.duplicate_count} tone="amber" footnote={aiStatusLabels[result.ai.status]} />
+        <MetricCard label="Переформулировано" value={result.summary.modified} tone="green" footnote="Сопоставленных пунктов" />
       </div>
+      <nav className="results-nav" aria-label="Разделы заключения"><a href="#findings">Замечания <span>{result.findings.length}</span></a><a href="#mapping">Карта изменений</a><a href="#export">Скачать отчёт</a><a href="#coverage">Охват и ограничения</a></nav>
+      <section className="findings-section" id="findings" aria-labelledby="findings-heading">
+        <div className="section-heading"><div><span className="eyebrow">ВЫВОДЫ И ИСТОЧНИКИ</span><h3 id="findings-heading">Точки внимания</h3></div><span className="count-pill">{result.findings.length}</span></div>
+        <p className="panel-intro">Выводов ИИ: {aiCount}. Локальных замечаний: {result.findings.length - aiCount}. Откройте источник для проверки. Удалённый пункт сам по себе не доказывает потерю функции.</p>
+        {result.findings.length ? <>
+          <div className="findings-grid">{result.findings.slice(0, visibleFindings).map((finding, index) => <FindingCard key={finding.id} finding={finding} index={index} expanded={expandedFindingId === finding.id} onToggle={() => setExpandedFindingId(expandedFindingId === finding.id ? null : finding.id)} />)}</div>
+          <p className="panel-intro" role="status" aria-live="polite">Показано {Math.min(visibleFindings, result.findings.length)} из {result.findings.length} замечаний.</p>
+          {visibleFindings < result.findings.length && <button type="button" className="button button--secondary" onClick={() => setVisibleFindings((count) => count + 8)}>Показать ещё</button>}
+        </> : <div className="all-clear"><FileText size={23} aria-hidden="true" /><div><strong>Замечаний с источниками нет</strong><span>Это не гарантирует отсутствие рисков. Проверьте карту изменений и охват анализа ниже.</span></div></div>}
+      </section>
       <div className="results-layout">
         <UnitsPanel units={result.units} active={activeUnit} onSelect={setActiveUnit} />
         <MappingTable changes={result.changes} units={result.units} activeUnit={activeUnit} />
       </div>
-      <section className="findings-section" id="findings" aria-labelledby="findings-heading">
-        <div className="section-heading"><div><span className="eyebrow">ВЫВОДЫ И ИСТОЧНИКИ</span><h3 id="findings-heading">Точки внимания</h3></div><span className="count-pill">{result.findings.length}</span></div>
-        <p className="panel-intro">Откройте карточку, чтобы увидеть точную цитату и исходный пункт документа.</p>
-        {result.findings.length ? <>
-          <div className="findings-grid">{result.findings.slice(0, visibleFindings).map((finding, index) => <FindingCard key={`${finding.kind}-${index}`} finding={finding} index={index} />)}</div>
-          <p className="panel-intro" role="status" aria-live="polite">Показано {Math.min(visibleFindings, result.findings.length)} из {result.findings.length} выводов.</p>
-          {visibleFindings < result.findings.length && <button type="button" className="button button--secondary" onClick={() => setVisibleFindings((count) => count + 8)}>Показать ещё</button>}
-        </> : <div className="all-clear"><CheckCircle2 size={21} /><div><strong>Структурных отклонений не найдено</strong><span>{aiUsed ? 'AI-проверка не сформировала выводов по этим документам.' : result.ai_error ? 'Удалённых пунктов нет; AI-проверка не завершилась.' : 'Удалённых пунктов нет; AI-проверка дублирования не запускалась.'}</span></div></div>}
-      </section>
       <section className="export-panel" id="export" aria-labelledby="export-heading">
         <div className="export-panel__icon"><ArrowDownToLine size={22} aria-hidden="true" /></div>
-        <div><span className="eyebrow">ГОТОВО К ВЫГРУЗКЕ</span><h3 id="export-heading">Заберите заключение с собой</h3><p>Сводка, изменения, выводы и ссылки на исходные пункты в одном документе.</p></div>
+        <div><span className="eyebrow">ГОТОВО К ВЫГРУЗКЕ</span><h3 id="export-heading">Заключение с источниками</h3><p>Отчёт по этому результату: сводка, изменения, цитаты и ограничения.</p></div>
         <div className="export-actions">
-          <button type="button" className="button button--light" disabled={exporting !== null} onClick={() => onExport('pdf')}><FileType2 size={17} />{exporting === 'pdf' ? 'Готовим PDF…' : 'Скачать PDF'}</button>
-          <button type="button" className="button button--outline-light" disabled={exporting !== null} onClick={() => onExport('docx')}><FileText size={17} />{exporting === 'docx' ? 'Готовим Word…' : 'Скачать Word'}</button>
+          <button type="button" className="button button--light" disabled={exporting !== null} onClick={() => onExport('pdf')}><FileType2 size={17} aria-hidden="true" />{exporting === 'pdf' ? 'Готовим PDF…' : 'Скачать PDF'}</button>
+          <button type="button" className="button button--outline-light" disabled={exporting !== null} onClick={() => onExport('docx')}><FileText size={17} aria-hidden="true" />{exporting === 'docx' ? 'Готовим Word…' : 'Скачать Word'}</button>
         </div>
       </section>
-      <p className="results-disclaimer"><ShieldCheck size={15} aria-hidden="true" />Выводы помогают эксперту проверить изменения и требуют содержательной проверки перед принятием решений. {riskCount > 0 ? `Всего точек риска: ${riskCount}.` : ''}</p>
+      <section className="coverage-panel surface" id="coverage" aria-labelledby="coverage-heading">
+        <div className="section-heading"><div><span className="eyebrow">ПРЕДЕЛЫ ПРОВЕРКИ</span><h3 id="coverage-heading">Охват и ограничения</h3></div><ShieldCheck size={20} aria-hidden="true" /></div>
+        <div className="coverage-grid">{(['before', 'after'] as const).map((side) => <div key={side}><strong>{side === 'before' ? 'Исходная редакция' : 'Новая редакция'}</strong><p>Распознано пунктов: {result.coverage[side].clauses}</p><p>Блоков вне нумерации: {result.coverage[side].unnumbered_blocks}{result.coverage[side].synthetic_ids ? ' · назначены условные номера' : ''}</p></div>)}</div>
+        {Boolean(result.ai.omitted_refs?.length || result.ai.truncated_refs?.length) && <details className="coverage-details">
+          <summary>Какие фрагменты ИИ не проверил полностью</summary>
+          <p className="panel-intro">В каждом списке показаны первые 50 ссылок максимум. Полные количества: не передано — {result.ai.coverage.omitted_clauses}, передано частично — {result.ai.coverage.truncated_clauses}.</p>
+          {!!result.ai.omitted_refs?.length && <div><strong>Не переданы ИИ</strong><ul>{result.ai.omitted_refs.slice(0, 50).map((reference, index) => <li key={`omitted-${index}`}>{reference}</li>)}</ul></div>}
+          {!!result.ai.truncated_refs?.length && <div><strong>Переданы частично</strong><ul>{result.ai.truncated_refs.slice(0, 50).map((reference, index) => <li key={`truncated-${index}`}>{reference}</li>)}</ul></div>}
+        </details>}
+        {result.warnings?.map((warning, index) => <div className="ai-warning" key={`${warning}-${index}`}><CircleAlert size={18} aria-hidden="true" /><span>{warning}</span></div>)}
+        <p className="panel-intro">Точное совпадение текста помогает заметить перенос пункта. Смысловая перенумерация, разделение и объединение функций могут требовать ручной проверки. Наличие точной цитаты подтверждает источник, но не доказывает вывод модели.</p>
+        <p className="panel-intro">Выгрузите отчёт после проверки: результат хранится на сервере до часа и может стать недоступен после его перезапуска.</p>
+      </section>
     </div>
   )
 }

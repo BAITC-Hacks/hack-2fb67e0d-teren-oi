@@ -7,6 +7,7 @@ validation and report text remain in the shared domain modules.
 from __future__ import annotations
 
 from asyncio import to_thread
+from collections import Counter
 import os
 import re
 from pathlib import Path
@@ -19,14 +20,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
-from .analyzer import AnalysisError, analyze_changes
+from .analyzer import AnalysisError, analyze_with_metadata, evidence_coverage, evidence_omissions
 from .diff import compare_documents
+from .evidence import resolve_citation, validated_findings
 from .docx_reader import DocumentReadError
 from .export_formats import export_report
 from .models import Clause, Comparison, Finding, SourceDocument
 from .parsers import TextBlock, parse_blocks
 from .readers import SUPPORTED_EXTENSIONS, read_document
-from .report import report_as_markdown
+from .report import escape_markdown, report_as_markdown
+from .report_store import ReportStore
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -34,6 +37,7 @@ MAX_UPLOAD_BYTES = 12 * 1024 * 1024
 MAX_TEXT_CHARS = 500_000
 MAX_REPORT_CHARS = 1_000_000
 MODEL = os.getenv("OPENAI_MODEL", "gpt-5.6-terra")
+REPORTS = ReportStore()
 UNIT_PATTERN = re.compile(
     r"\b((?:Департамент|Управление|Отдел|Центр|Служба|Группа|Дирекция|"
     r"ДЕПАРТАМЕНТ|УПРАВЛЕНИЕ|ОТДЕЛ|ЦЕНТР|СЛУЖБА|ГРУППА|ДИРЕКЦИЯ)\s+[^:;,.\n]{2,90})",
@@ -60,7 +64,9 @@ class ApiProblem(Exception):
 
 
 class ExportRequest(BaseModel):
-    report_markdown: str = Field(min_length=1, max_length=MAX_REPORT_CHARS)
+    analysis_id: str | None = Field(default=None, min_length=1, max_length=128)
+    # Retained for older clients. The current UI exports server snapshots only.
+    report_markdown: str | None = Field(default=None, min_length=1, max_length=MAX_REPORT_CHARS)
     format: Literal["pdf", "docx"]
 
 
@@ -150,6 +156,8 @@ async def _source_document(file: UploadFile | None, text: str | None, label: str
         raise ApiProblem(400, "DOCUMENT_READ_ERROR", str(exc)) from exc
     if not document.clauses:
         raise ApiProblem(400, "NO_CLAUSES", f"В «{name}» не найден текст для сравнения.")
+    if sum(len(item.text) for item in document.clauses) + sum(map(len, document.unnumbered_blocks)) > MAX_TEXT_CHARS:
+        raise ApiProblem(413, "TEXT_TOO_LARGE", "Извлечённый текст превышает 500 000 символов. Разделите документ на части.")
     return document
 
 
@@ -173,10 +181,20 @@ def _units(comparison: Comparison) -> list[dict[str, object]]:
                 if key not in target:
                     target[key] = (name, set())
                 target[key][1].add(clause.clause_id)
-    changed_ids = {
-        item.clause_id
+    changed_names = {
+        name.casefold()
         for item in (*comparison.added, *comparison.removed, *comparison.modified)
+        for clause in (item.before, item.after) if clause
+        for name in _unit_names(clause)
     }
+    change_ids_by_name: dict[str, list[str]] = {}
+    for index, change in enumerate(
+        (*comparison.removed, *comparison.modified, *comparison.added, *comparison.unchanged), 1
+    ):
+        names = {name.casefold() for clause in (change.before, change.after) if clause
+                 for name in _unit_names(clause)}
+        for name in names:
+            change_ids_by_name.setdefault(name, []).append(f"change-{index}")
     units: list[dict[str, object]] = []
     for key in sorted(old.keys() | new.keys()):
         old_data, new_data = old.get(key), new.get(key)
@@ -185,7 +203,7 @@ def _units(comparison: Comparison) -> list[dict[str, object]]:
             status = "created"
         elif new_data is None:
             status = "removed"
-        elif any(clause_id in changed_ids for clause_id in clause_ids):
+        elif key in changed_names:
             status = "transformed"
         else:
             status = "retained"
@@ -193,6 +211,7 @@ def _units(comparison: Comparison) -> list[dict[str, object]]:
             "name": (new_data or old_data)[0],
             "status": status,
             "clause_ids": clause_ids,
+            "change_ids": change_ids_by_name.get(key, []),
         })
     return units
 
@@ -208,7 +227,7 @@ def _structural_findings(comparison: Comparison) -> list[Finding]:
             "kind": "потенциальная потеря функции",
             "title": f"Пункт {clause.clause_id} отсутствует в новой редакции",
             "explanation": (
-                "Пункт удалён по результатам сопоставления номеров. Проверьте, "
+                "Пункт не найден при точном сопоставлении текста и номеров. Проверьте, "
                 "перенесена ли его функция в другой пункт или документ."
             ),
             "confidence": "низкая",
@@ -223,6 +242,10 @@ def _structural_findings(comparison: Comparison) -> list[Finding]:
 
 def _change_payload(comparison: Comparison) -> list[dict[str, str | None]]:
     changes: list[dict[str, str | None]] = []
+    repeated_ids = {
+        label: {key for key, count in Counter(clause.clause_id for clause in document.clauses).items() if count > 1}
+        for label, document in (("before", comparison.old_document), ("after", comparison.new_document))
+    }
     for status, items in (
         ("removed", comparison.removed),
         ("modified", comparison.modified),
@@ -231,10 +254,19 @@ def _change_payload(comparison: Comparison) -> list[dict[str, str | None]]:
     ):
         for item in items:
             changes.append({
+                "id": f"change-{len(changes) + 1}",
                 "clause_id": item.clause_id,
                 "status": status,
                 "before": item.before.text if item.before else None,
                 "after": item.after.text if item.after else None,
+                "before_clause_id": item.before.clause_id if item.before else None,
+                "after_clause_id": item.after.clause_id if item.after else None,
+                "match_method": (
+                    "exact_text" if status == "unchanged" else "occurrence"
+                    if (item.before and item.before.clause_id in repeated_ids["before"])
+                    or (item.after and item.after.clause_id in repeated_ids["after"])
+                    else "number"
+                ),
                 "before_source": (
                     f"{item.before.source} · {item.before.location}" if item.before else None
                 ),
@@ -247,25 +279,56 @@ def _change_payload(comparison: Comparison) -> list[dict[str, str | None]]:
 
 def _finding_payload(finding: Finding, comparison: Comparison) -> dict[str, object]:
     payload = finding.model_dump(mode="json")
-    for citation in payload["citations"]:
-        document = (
-            comparison.old_document
-            if citation["document_label"] == "до"
-            else comparison.new_document
-        )
-        clause = next(
-            (
-                item
-                for item in document.clauses
-                if item.clause_id == citation["clause_id"]
-                and citation["quote"] in item.text
-            ),
-            None,
-        )
+    for citation, original in zip(payload["citations"], finding.citations):
+        clause = resolve_citation(comparison, original)
         if clause is not None:
             citation["source"] = clause.source
             citation["location"] = clause.location
     return payload
+
+
+def _document_coverage(document: SourceDocument) -> dict[str, object]:
+    return {
+        "clauses": len(document.clauses),
+        "unnumbered_blocks": len(document.unnumbered_blocks),
+        "synthetic_ids": any(clause.clause_id.startswith(("Текст ", "Блок ")) for clause in document.clauses),
+    }
+
+
+def _report_context(ai: dict, coverage: dict, summary: dict, warnings: list[str]) -> list[str]:
+    statuses = {
+        "disabled": "AI-проверка выключена пользователем; выполнено локальное сравнение.",
+        "unavailable": "AI-проверка недоступна: ключ не настроен. Локальное сравнение выполнено.",
+        "failed": "AI-проверка не завершилась. Локальное сравнение выполнено.",
+        "skipped": "AI-проверка не запускалась: изменений для проверки не найдено.",
+        "succeeded": "AI-проверка выполнена. Цитаты проверены на присутствие в источниках.",
+    }
+    lines = ["## Статус AI-проверки", "", statuses[ai["status"]], ""]
+    if ai["requested"]:
+        lines.extend([f"Модель: {escape_markdown(ai['model'], inline=True)}", ""])
+    if ai["error"]:
+        lines.extend([str(ai["error"]), ""])
+    if ai["summary"]:
+        lines.extend(["Сводка составлена приложением по проверенным выводам модели:", str(ai["summary"]), ""])
+    lines.extend([
+        f"Потенциальные потери: {summary['loss_count']}; возможные дубли: {summary['duplicate_count']}. "
+        f"Подразделений с изменениями по текстовым признакам: {summary['units_changed']}.", "",
+        "## Охват исходных документов", "",
+        f"Пунктов до: {coverage['before']['clauses']}; после: {coverage['after']['clauses']}.", "",
+    ])
+    if ai["status"] == "succeeded":
+        selected = ai["coverage"]
+        lines.extend([
+            f"В AI-проверку включено фрагментов: {selected['included_clauses']} из {selected['total_clauses']}; "
+            f"пропущено: {selected['omitted_clauses']}; усечено: {selected['truncated_clauses']}.", "",
+            "Сохранённый одинаковый текст учитывается один раз, изменённый — для каждой редакции.", "",
+        ])
+        for field, title in (("omitted_refs", "Не переданы"), ("truncated_refs", "Переданы частично")):
+            if ai[field]:
+                lines.extend([f"{title} (до 50 фрагментов): {escape_markdown(', '.join(ai[field]), inline=True)}.", ""])
+    for warning in warnings:
+        lines.extend([warning, ""])
+    return lines
 
 
 @app.get("/api/health")
@@ -304,67 +367,101 @@ async def analyze(
             "Проверьте их вручную в исходных документах."
         )
     comparison = await to_thread(compare_documents, old_document, new_document)
-    findings = _structural_findings(comparison)
-    ai_error: str | None = None
+    local_findings = _structural_findings(comparison)
+    findings = [item for item, _ in validated_findings(comparison, local_findings)]
+    if len(findings) < len(local_findings):
+        warnings.append("Некоторые локальные сигналы не показаны: одинаковые номера и цитаты не позволяют однозначно выбрать источник. Все пункты сохранены в карте изменений.")
+    origins = ["local"] * len(findings)
+    coverage = {"before": _document_coverage(old_document), "after": _document_coverage(new_document)}
+    for label, document in (("до", old_document), ("после", new_document)):
+        if _document_coverage(document)["synthetic_ids"]:
+            warnings.append(f"Редакция «{label}» без нумерации: используются временные номера блоков. Сопоставление по порядку требует ручной проверки.")
+        if any(count > 1 for count in Counter(clause.clause_id for clause in document.clauses).values()):
+            warnings.append(f"В редакции «{label}» повторяются номера пунктов. Фрагменты сохранены отдельно; неоднозначные изменения проверьте по позициям в источнике.")
+    ai: dict = {
+        "status": "disabled", "requested": use_ai, "model": MODEL,
+        "summary": None, "summary_origin": None, "finding_ids": [], "error": None,
+        "coverage": evidence_coverage(comparison), "rejected_findings": 0,
+        "omitted_refs": [], "truncated_refs": [],
+    }
     if use_ai:
         if not os.getenv("OPENAI_API_KEY"):
-            raise ApiProblem(400, "AI_NOT_CONFIGURED", "Для AI-анализа нужен локальный OPENAI_API_KEY.")
-        try:
-            ai_findings = await to_thread(analyze_changes, comparison, MODEL)
-        except AnalysisError as exc:
-            ai_error = str(exc)
+            ai["status"] = "unavailable"
+            ai["error"] = "Ключ OpenAI не настроен на сервере. Добавьте OPENAI_API_KEY в локальный .env и перезапустите API."
         else:
-            explained_losses = {
-                citation.clause_id
-                for finding in ai_findings
-                if finding.kind == "потенциальная потеря функции"
-                for citation in finding.citations
-                if citation.document_label == "до"
-            }
-            findings = [
-                finding for finding in findings
-                if finding.citations[0].clause_id not in explained_losses
-            ]
-            findings.extend(ai_findings)
+            try:
+                analysis = await to_thread(analyze_with_metadata, comparison, MODEL)
+            except AnalysisError as exc:
+                ai["status"], ai["error"] = "failed", str(exc)
+            else:
+                ai["status"] = "succeeded" if analysis.called else "skipped"
+                ai["coverage"] = analysis.coverage
+                verified_ai = [item for item, _ in validated_findings(comparison, analysis.findings)]
+                ai["rejected_findings"] = analysis.rejected_findings + len(analysis.findings) - len(verified_ai)
+                explained_losses = {
+                    resolve_citation(comparison, citation)
+                    for finding in verified_ai if finding.kind == "потенциальная потеря функции"
+                    for citation in finding.citations if citation.document_label == "до"
+                }
+                findings = [item for item in findings if resolve_citation(comparison, item.citations[0]) not in explained_losses]
+                origins = ["local"] * len(findings) + ["ai"] * len(verified_ai)
+                findings.extend(verified_ai)
+                if analysis.called:
+                    ai.update(evidence_omissions(comparison))
+                    ai["summary_origin"] = "verified_findings"
+                    ai["summary"] = (
+                        f"Выводов модели с проверенными цитатами: {len(verified_ai)}. "
+                        "Ниже приведены формулировки модели; их смысловую корректность следует проверить по источникам."
+                        if verified_ai else
+                        "Модель не вернула выводов с проверяемыми цитатами. Это не подтверждает отсутствие рисков в документах."
+                    )
+                if ai["rejected_findings"]:
+                    warnings.append(f"Не показаны выводы модели с неподтверждёнными или неоднозначными цитатами: {ai['rejected_findings']}.")
     units = _units(comparison)
     duplicate_count = sum(item.kind == "потенциальное дублирование" for item in findings)
     loss_count = sum(item.kind == "потенциальная потеря функции" for item in findings)
+    summary = {
+        "added": len(comparison.added), "removed": len(comparison.removed),
+        "modified": len(comparison.modified), "unchanged": len(comparison.unchanged),
+        "units_changed": sum(unit["status"] != "retained" for unit in units),
+        "duplicate_count": duplicate_count, "loss_count": loss_count,
+    }
+    finding_payloads = []
+    for index, (finding, origin) in enumerate(zip(findings, origins), 1):
+        payload = {**_finding_payload(finding, comparison), "id": f"finding-{index}", "origin": origin}
+        finding_payloads.append(payload)
+        if origin == "ai":
+            ai["finding_ids"].append(payload["id"])
     report_markdown = await to_thread(
-        report_as_markdown, comparison, findings, old_document.name, new_document.name
+        report_as_markdown, comparison, findings, old_document.name, new_document.name,
+        finding_origins=origins, context=_report_context(ai, coverage, summary, warnings),
     )
-    if ai_error:
-        report_markdown += (
-            "\n## Статус AI-проверки\n\n"
-            f"AI-проверка не завершилась: {ai_error} Локальное сопоставление выполнено.\n"
-        )
-    if warnings:
-        report_markdown += "\n## Охват исходных документов\n\n" + "\n\n".join(warnings) + "\n"
     if len(report_markdown) > MAX_REPORT_CHARS:
         raise ApiProblem(413, "REPORT_TOO_LARGE", "Итоговый отчёт превышает допустимый размер.")
     return {
-        "summary": {
-            "added": len(comparison.added),
-            "removed": len(comparison.removed),
-            "modified": len(comparison.modified),
-            "unchanged": len(comparison.unchanged),
-            "units_changed": sum(unit["status"] != "retained" for unit in units),
-            "duplicate_count": duplicate_count,
-            "loss_count": loss_count,
-        },
+        "analysis_id": REPORTS.put(report_markdown),
+        "summary": summary,
         "changes": _change_payload(comparison),
         "units": units,
-        "findings": [_finding_payload(finding, comparison) for finding in findings],
+        "findings": finding_payloads,
         "report_markdown": report_markdown,
         "source_names": {"before": old_document.name, "after": new_document.name},
-        "ai_error": ai_error,
+        "ai": ai,
+        "coverage": coverage,
+        "ai_error": ai["error"],
         "warnings": warnings,
     }
 
 
 @app.post("/api/export")
 def export(payload: ExportRequest) -> Response:
+    if bool(payload.analysis_id) == bool(payload.report_markdown):
+        raise ApiProblem(400, "AMBIGUOUS_EXPORT", "Укажите идентификатор анализа или текст отчёта, но не оба сразу.")
+    markdown = REPORTS.get(payload.analysis_id) if payload.analysis_id else payload.report_markdown
+    if markdown is None:
+        raise ApiProblem(410, "REPORT_EXPIRED", "Отчёт больше не хранится на сервере. Повторите анализ и скачайте его снова.")
     try:
-        data, media_type, filename = export_report(payload.report_markdown, payload.format)
+        data, media_type, filename = export_report(markdown, payload.format)
     except (ValueError, RuntimeError) as exc:
         raise ApiProblem(500, "EXPORT_FAILED", str(exc)) from exc
     return Response(

@@ -100,7 +100,7 @@ class ReaderTests(unittest.TestCase):
         data = source.tobytes()
         source.close()
 
-        with self.assertRaisesRegex(DocumentReadError, "OCR is not supported"):
+        with self.assertRaisesRegex(DocumentReadError, r"OCR.*недоступно.*Загрузите PDF"):
             read_pdf(data, "scan.pdf")
 
     def test_xlsx_combines_clause_id_and_body_cells(self) -> None:
