@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import os
+import re
 import sys
+from io import BytesIO
 from pathlib import Path
 
 import streamlit as st
@@ -13,78 +15,375 @@ sys.path.insert(0, str(ROOT / "src"))
 from teren_oi.analyzer import AnalysisError, analyze_changes  # noqa: E402
 from teren_oi.diff import compare_documents  # noqa: E402
 from teren_oi.docx_reader import DocumentReadError, read_docx  # noqa: E402
+from teren_oi.models import Clause, Finding, SourceDocument  # noqa: E402
 from teren_oi.report import report_as_json, report_as_markdown  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
+DEMO_BEFORE = """Положение о контроле качества обслуживания — учебный пример
+
+2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
+2.2 Центр контроля качества: выборочно проверяет записи разговоров, фиксирует нарушения стандарта и назначает срок исправления.
+2.3 Региональные подразделения: обрабатывают обращения клиентов, устраняют причину и закрывают заявку после подтверждения результата.
+2.4 Группа обратной связи: собирает отзывы после закрытия обращений и передаёт замечания ответственному подразделению.
+"""
+
+DEMO_AFTER = """Положение о контроле качества обслуживания — учебный пример
+
+2.1 Департамент клиентской аналитики: анализирует причины повторных обращений и ежемесячно передаёт руководству сводку по темам.
+2.3 Региональные подразделения: обрабатывают обращения клиентов и устраняют причину; закрытие заявки выполняется после проверки результата.
+2.4 Департамент клиентского опыта: анализирует обращения и отзывы клиентов, готовит сводный отчёт и предлагает улучшения сервиса.
+2.5 Группа обратной связи: собирает отзывы после закрытия обращений и передаёт замечания ответственному подразделению.
+"""
+
+DEMO_NOTICE = (
+    "Демо-комплект синтетический: это иллюстративный сценарий для проверки интерфейса, "
+    "а не официальные документы или сведения АО «Казахтелеком»."
+)
+
+CLAUSE_RE = re.compile(r"^\s*(\d+(?:\.\d+){0,7})(?:[.)])?\s+(.+?)\s*$")
+UNIT_RE = re.compile(
+    r"\b((?:департамент|управление|отдел|центр|служба|группа|дирекция)\s+[^:;,.\n]{2,90})",
+    re.IGNORECASE,
+)
+
+
+class InputError(ValueError):
+    """A supported file could not be converted into comparable document text."""
+
+
+def source_from_text(text: str, name: str) -> SourceDocument:
+    """Convert pasted text or extracted PDF/TXT text to the shared domain model."""
+    lines = [line.strip() for line in text.replace("\r", "").splitlines() if line.strip()]
+    clauses: list[Clause] = []
+    unnumbered: list[str] = []
+    for line_number, line in enumerate(lines, start=1):
+        match = CLAUSE_RE.match(line)
+        if match:
+            clauses.append(Clause(match.group(1), match.group(2).strip(), name, f"строка {line_number}"))
+        elif clauses:
+            last = clauses[-1]
+            clauses[-1] = Clause(last.clause_id, f"{last.text} {line}", last.source, last.location)
+        else:
+            unnumbered.append(line)
+    if not clauses:
+        blocks = [block.strip() for block in re.split(r"\n\s*\n", text) if block.strip()]
+        clauses = [Clause(f"Текст {index}", block, name, f"блок {index}")
+                   for index, block in enumerate(blocks, start=1)]
+    if not clauses:
+        raise InputError(f"В «{name}» нет текста для сравнения.")
+    return SourceDocument(name, tuple(clauses), tuple(unnumbered))
+
+
+def read_uploaded(uploaded_file) -> SourceDocument:
+    name = uploaded_file.name
+    data = uploaded_file.getvalue()
+    suffix = Path(name).suffix.lower()
+    if suffix == ".docx":
+        return read_docx(data, name)
+    if suffix == ".txt":
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise InputError(f"«{name}»: TXT ожидается в кодировке UTF-8.") from exc
+        return source_from_text(text, name)
+    if suffix == ".pdf":
+        try:
+            from pypdf import PdfReader
+        except ImportError as exc:
+            raise InputError("Для чтения PDF установите зависимость pypdf (pip install pypdf).") from exc
+        try:
+            reader = PdfReader(BytesIO(data))
+            text = "\n".join(page.extract_text() or "" for page in reader.pages)
+        except Exception as exc:
+            raise InputError(f"Не удалось извлечь текст из PDF «{name}».") from exc
+        if not text.strip():
+            raise InputError(f"В «{name}» не найден текст. Для сканированного PDF потребуется OCR.")
+        return source_from_text(text, name)
+    raise InputError("Поддерживаются DOCX, PDF и TXT.")
+
+
+def render_unit_cards(comparison) -> None:
+    buckets: dict[str, dict[str, str]] = {"created": {}, "reorganized": {}, "retained": {}, "removed": {}}
+
+    def names(text: str) -> set[str]:
+        return {re.sub(r"\s+", " ", match.group(1)).strip(" -–—") for match in UNIT_RE.finditer(text)}
+
+    for change in comparison.added:
+        if change.after:
+            for name in names(change.after.text):
+                buckets["created"][name.casefold()] = name
+    for change in comparison.removed:
+        if change.before:
+            for name in names(change.before.text):
+                buckets["removed"][name.casefold()] = name
+    for change in comparison.modified:
+        old_names = names(change.before.text) if change.before else set()
+        new_names = names(change.after.text) if change.after else set()
+        for name in old_names | new_names:
+            buckets["reorganized"][name.casefold()] = name
+    for change in comparison.unchanged:
+        if change.after:
+            for name in names(change.after.text):
+                buckets["retained"][name.casefold()] = name
+
+    labels = (("Преобразовано", "reorganized"), ("Создано", "created"),
+              ("Сохранено", "retained"), ("Удалённые названия", "removed"))
+    cols = st.columns(4)
+    for col, (label, key) in zip(cols, labels):
+        entries = list(buckets[key].values())
+        with col:
+            st.metric(label, len(entries))
+            if entries:
+                for entry in entries[:8]:
+                    st.markdown(f"- {entry}")
+                if len(entries) > 8:
+                    st.caption(f"И ещё {len(entries) - 8}…")
+            else:
+                st.caption("Не обнаружено")
+    st.caption("Названия подразделений извлекаются эвристически из изменённых пунктов; проверьте их по первоисточнику.")
+
+
+def risk_label(confidence: str) -> str:
+    return {"высокая": "ВЫСОКИЙ РИСК · уверенность AI высокая",
+            "средняя": "ПРОВЕРИТЬ · уверенность AI средняя",
+            "низкая": "СИГНАЛ · уверенность AI низкая"}.get(confidence, "ТРЕБУЕТ ПРОВЕРКИ")
+
+
 st.set_page_config(page_title="Teren Oi · Анализ изменений", page_icon="◈", layout="wide")
-st.title("◈ Teren Oi")
-st.subheader("Сравнение редакций организационных документов")
-st.caption("Загрузите старую и новую редакции положения. Сначала покажем точный diff; AI-анализ — по желанию.")
-st.info("AI выводы носят рекомендательный характер. Каждое утверждение должно проверяться по показанным пунктам документа.")
+st.markdown("""
+<style>
+    :root { --ink: #17243a; --muted: #46566a; --paper: #f4f7fb; --line: #dbe3ec; --navy: #101f38; --teal: #087e8b; --teal-dark:#075e68; }
+    html { scroll-behavior:smooth; }
+    .stApp, [data-testid="stAppViewContainer"] { background: var(--paper); color: var(--ink); }
+    header[data-testid="stHeader"] { background:var(--paper) !important; }
+    [data-testid="stMain"] { color: var(--ink); }
+    [data-testid="stMain"] h1, [data-testid="stMain"] h2,
+    [data-testid="stMain"] h3, [data-testid="stMain"] h4 { color: var(--ink) !important; letter-spacing: -.02em; }
+    [data-testid="stMain"] p, [data-testid="stMain"] li,
+    [data-testid="stMain"] label, [data-testid="stMain"] [data-testid="stWidgetLabel"] { color: #34445a; }
+    [data-testid="stMain"] [data-testid="stCaptionContainer"] p { color: var(--muted) !important; }
+    [data-testid="stSidebar"] { background: var(--navy); }
+    [data-testid="stSidebar"] * { color: #e8f0fa; }
+    .block-container { max-width: 1380px; padding: 4rem 2.25rem 4rem; }
+    .brandline { display:flex; align-items:center; gap:.7rem; color:#53647a; font-size:.78rem; font-weight:700; letter-spacing:.13em; text-transform:uppercase; margin-bottom:.35rem; }
+    .brandmark { display:inline-flex; width:1.7rem; height:1.7rem; align-items:center; justify-content:center; background:var(--navy); color:#62d5dc; font-size:1rem; border-radius:6px; }
+    .hero { background: var(--navy); color: #f6fbff; padding: 1.5rem 1.8rem; border-left: 4px solid #42cad2; border-radius:0 8px 8px 0; margin:.5rem 0 1.3rem; box-shadow:0 8px 24px rgba(16,31,56,.08); }
+    .hero h1 { color:#fff !important; font-size:2rem; margin:0 0 .3rem; }
+    .hero p { color:#c7d3e1 !important; margin:0; font-size:1rem; }
+    .demo-note { border: 1px solid #e6cf8a; border-left:4px solid #d5a323; background: #fff8e5; color: #574100; padding: .8rem 1rem; border-radius:6px; }
+    div[data-testid="stMetric"] { background: #fff; border: 1px solid var(--line); padding: .8rem 1rem; border-radius:8px; transition:border-color .18s ease, box-shadow .18s ease; }
+    div[data-testid="stMetric"]:hover { border-color:#b8ccd8; box-shadow:0 5px 16px rgba(16,31,56,.06); }
+    div[data-testid="stForm"] { background:#fff; border:1px solid var(--line); padding:1.25rem; border-radius:8px; transition:border-color .18s ease, box-shadow .18s ease; }
+    div[data-testid="stForm"]:focus-within { border-color:#98cbd0; box-shadow:0 0 0 3px rgba(8,126,139,.08); }
+    div[data-testid="stMetric"] label, div[data-testid="stMetric"] [data-testid="stMetricValue"] { color:var(--ink) !important; }
+    [data-testid="stFileUploaderDropzone"] { background:#fff; border:1px dashed #aebdcd; border-radius:7px; transition:border-color .18s ease, background-color .18s ease; }
+    [data-testid="stFileUploaderDropzone"]:hover { border-color:var(--teal); background:#f8fdfd; }
+    [data-testid="stFileUploaderDropzone"] * { color:#33445b !important; }
+    [data-testid="stTextArea"] textarea { background:#fff; color:var(--ink); border-color:#bdc9d6; }
+    button[kind^="primary"] { background:var(--teal) !important; border-color:var(--teal) !important; color:#fff !important; transition:background-color .16s ease, border-color .16s ease, box-shadow .16s ease; }
+    button[kind^="primary"]:hover { background:var(--teal-dark) !important; border-color:var(--teal-dark) !important; box-shadow:0 4px 12px rgba(8,126,139,.18); }
+    [data-testid="stMain"] button[kind^="primary"] p { color:#fff !important; }
+    button[kind="secondary"] { background:#fff !important; border-color:#bdc9d6 !important; color:#22354c !important; transition:border-color .16s ease, background-color .16s ease; }
+    button[kind="secondary"] div { color:#22354c !important; }
+    [data-testid="stRadioOption"] > div > div:first-child { border-color:#96a7ba !important; }
+    [data-testid="stRadioOption"][data-selected="true"] > div > div:first-child { background:var(--teal) !important; border-color:var(--teal) !important; }
+    [data-testid="stTabs"] button[role="tab"] { color:#43536a; transition:color .16s ease, border-color .16s ease; }
+    [data-testid="stTabs"] button[aria-selected="true"] { color:#076e7a; border-bottom-color:#087e8b; }
+    [data-testid="stAlert"] p { color:inherit !important; }
+    [data-testid="stSidebar"] [data-testid="stAlert"] { background:#1a3150 !important; border:1px solid #506986; border-left:3px solid #d5a323; border-radius:6px; }
+    [data-testid="stSidebar"] [data-testid="stAlert"] p { color:#f6d992 !important; }
+    button:focus-visible, textarea:focus-visible, input:focus-visible { outline:3px solid #39aeb7 !important; outline-offset:2px; }
+    @keyframes enter-soft { from { opacity:0; transform:translateY(7px); } to { opacity:1; transform:translateY(0); } }
+    [data-testid="stMain"] .hero { animation:enter-soft .38s cubic-bezier(.2,.7,.2,1) both; }
+    [data-testid="stMain"] .demo-note { animation:enter-soft .28s cubic-bezier(.2,.7,.2,1) both; }
+    hr { border-color:var(--line); }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { scroll-behavior:auto !important; animation-duration:.01ms !important; animation-iteration-count:1 !important; transition-duration:.01ms !important; } }
+    @media (max-width: 700px) { .block-container { padding:3rem 1rem 3rem; } div[data-testid="stForm"] { padding:.9rem; } .hero { padding:1.2rem; } .hero h1 { font-size:1.6rem; } }
+</style>
+""", unsafe_allow_html=True)
 
-old_col, new_col = st.columns(2)
-with old_col:
-    old_file = st.file_uploader("Старая редакция (.docx)", type=["docx"], key="old_doc", max_upload_size=25)
-with new_col:
-    new_file = st.file_uploader("Новая редакция (.docx)", type=["docx"], key="new_doc", max_upload_size=25)
+with st.sidebar:
+    st.markdown("## ◈ TEREN OI")
+    st.caption("Сравнение положений и функций между редакциями")
+    st.divider()
+    if os.getenv("OPENAI_API_KEY"):
+        st.success("AI-анализ подключён")
+        st.caption(f"Модель: {os.getenv('OPENAI_MODEL', 'gpt-5.4-mini')}")
+    else:
+        st.warning("API-ключ не задан")
+        st.caption("Точный diff работает без ключа. Добавьте OPENAI_API_KEY в .env для AI-выводов.")
+    st.divider()
+    st.markdown("**Как работает**")
+    st.caption("Сопоставляем пункты, показываем точные изменения, затем при наличии ключа просим AI оценить только затронутые фрагменты. Цитаты проверяются приложением.")
 
-run_ai = st.checkbox("Сформировать AI-выводы по изменениям", value=bool(os.getenv("OPENAI_API_KEY")))
-if run_ai and not os.getenv("OPENAI_API_KEY"):
-    st.warning("Для AI-анализа добавьте OPENAI_API_KEY в локальный .env. Точный diff работает без ключа.")
+st.markdown("<div class='brandline'><span class='brandmark'>◈</span> Teren Oi · Document intelligence</div>", unsafe_allow_html=True)
+st.markdown("<div class='hero'><h1>Сравнение редакций документов</h1><p>Найдите изменения в обязанностях и проверьте каждый вывод по исходному пункту.</p></div>", unsafe_allow_html=True)
+st.subheader("Проверка в 1 клик")
+st.caption("Запустите демонстрационный сценарий без подготовки файлов или загрузите свои редакции ниже.")
+demo_clicked = st.button("Загрузить контрольный демо-комплект Казахтелеком", type="primary", use_container_width=True,
+                         help="Подставляет безопасный учебный пример и сразу выполняет сравнение.")
+if demo_clicked:
+    st.session_state["before_mode"] = "Текст"
+    st.session_state["after_mode"] = "Текст"
+    st.session_state["before_text"] = DEMO_BEFORE
+    st.session_state["after_text"] = DEMO_AFTER
+    st.session_state["demo_active"] = True
+    st.session_state["demo_notice"] = DEMO_NOTICE
 
-if old_file and new_file and st.button("Сравнить документы", type="primary", use_container_width=True):
+if st.session_state.get("demo_notice"):
+    st.markdown(f"<div class='demo-note'>{st.session_state['demo_notice']}</div>", unsafe_allow_html=True)
+    st.write("")
+
+st.divider()
+st.subheader("Исходные документы")
+st.caption("Перетащите файлы в зону загрузки или переключитесь на текст, чтобы вставить и отредактировать содержимое.")
+with st.form("comparison_inputs", clear_on_submit=False):
+    before_col, after_col = st.columns(2)
+    with before_col:
+        st.markdown("### 01 · До изменений")
+        before_mode = st.radio("Источник старой редакции", ["Файл", "Текст"], horizontal=True, key="before_mode")
+        if before_mode == "Файл":
+            before_file = st.file_uploader("Перетащите или выберите DOCX, PDF, TXT", type=["docx", "pdf", "txt"], key="before_file")
+            before_text = ""
+        else:
+            st.session_state.setdefault("before_text", "")
+            before_text = st.text_area("Вставьте или отредактируйте старый текст", key="before_text", height=220,
+                                       placeholder="Каждый пункт желательно начинать с номера, например 2.1")
+            before_file = None
+    with after_col:
+        st.markdown("### 02 · После изменений")
+        after_mode = st.radio("Источник новой редакции", ["Файл", "Текст"], horizontal=True, key="after_mode")
+        if after_mode == "Файл":
+            after_file = st.file_uploader("Перетащите или выберите DOCX, PDF, TXT", type=["docx", "pdf", "txt"], key="after_file")
+            after_text = ""
+        else:
+            st.session_state.setdefault("after_text", "")
+            after_text = st.text_area("Вставьте или отредактируйте новый текст", key="after_text", height=220,
+                                      placeholder="Каждый пункт желательно начинать с номера, например 2.1")
+            after_file = None
+    use_ai = st.checkbox("Дополнить точный diff анализом AI (потери, дублирование, ответственность)",
+                         value=bool(os.getenv("OPENAI_API_KEY")), key="use_ai")
+    compare_clicked = st.form_submit_button("Сравнить редакции", type="primary", use_container_width=True)
+
+if use_ai and not os.getenv("OPENAI_API_KEY"):
+    st.info("AI-ключ не найден. Точный diff доступен; AI-вкладки покажут подсказку по настройке ключа.")
+
+if compare_clicked or demo_clicked:
     try:
-        old_doc = read_docx(old_file.getvalue(), old_file.name)
-        new_doc = read_docx(new_file.getvalue(), new_file.name)
-        comparison = compare_documents(old_doc, new_doc)
-        findings = []
+        if before_mode == "Файл":
+            if not before_file:
+                raise InputError("Выберите файл старой редакции.")
+            before_doc = read_uploaded(before_file)
+        else:
+            before_doc = source_from_text(before_text, "Старая редакция")
+        if after_mode == "Файл":
+            if not after_file:
+                raise InputError("Выберите файл новой редакции.")
+            after_doc = read_uploaded(after_file)
+        else:
+            after_doc = source_from_text(after_text, "Новая редакция")
+
+        result = compare_documents(before_doc, after_doc)
+        findings: list[Finding] = []
         ai_error = None
-        if run_ai and os.getenv("OPENAI_API_KEY"):
-            with st.spinner("Анализируем только изменённые пункты…"):
+        if use_ai and os.getenv("OPENAI_API_KEY"):
+            with st.spinner("AI анализирует только изменённые пункты и проверяет источники…"):
                 try:
-                    findings = analyze_changes(comparison, os.getenv("OPENAI_MODEL", "gpt-5.4-mini"))
+                    findings = analyze_changes(result, os.getenv("OPENAI_MODEL", "gpt-5.4-mini"))
                 except AnalysisError as exc:
                     ai_error = str(exc)
-        st.session_state["comparison"] = comparison
+        st.session_state["comparison"] = result
         st.session_state["findings"] = findings
         st.session_state["ai_error"] = ai_error
-        st.session_state["doc_names"] = (old_file.name, new_file.name)
-    except DocumentReadError as exc:
+        st.session_state["source_names"] = (before_doc.name, after_doc.name)
+    except (InputError, DocumentReadError) as exc:
         st.error(str(exc))
 
 comparison = st.session_state.get("comparison")
 if comparison:
-    old_name, new_name = st.session_state["doc_names"]
-    a, b, c, d = st.columns(4)
-    a.metric("Добавлено", len(comparison.added))
-    b.metric("Удалено", len(comparison.removed))
-    c.metric("Изменено", len(comparison.modified))
-    d.metric("Без изменений", len(comparison.unchanged))
-
+    old_name, new_name = st.session_state.get("source_names", (comparison.old_document.name, comparison.new_document.name))
+    findings: list[Finding] = st.session_state.get("findings", [])
+    metrics = st.columns(4)
+    for col, label, value in zip(metrics, ("Добавлено", "Удалено", "Изменено", "Совпадает"),
+                                 (len(comparison.added), len(comparison.removed), len(comparison.modified), len(comparison.unchanged))):
+        col.metric(label, value)
     if st.session_state.get("ai_error"):
-        st.warning(f"AI-анализ не завершился: {st.session_state['ai_error']} Точный diff доступен ниже.")
-    findings = st.session_state.get("findings", [])
-    if findings:
-        st.header("Аналитические выводы")
-        for finding in findings:
-            with st.expander(f"{finding.kind}: {finding.title}", expanded=True):
-                st.write(finding.explanation)
-                st.caption(f"Уверенность: {finding.confidence}")
+        st.warning(f"AI-анализ не завершился: {st.session_state['ai_error']} Точный diff показан ниже.")
+
+    status_tab, loss_tab, duplicate_tab, mapping_tab, export_tab = st.tabs(
+        ["Подразделения", "Потери функций", "Дубли и конфликты", "Матрица маппинга", "Экспорт заключения"]
+    )
+
+    with status_tab:
+        st.subheader("Статусы подразделений")
+        render_unit_cards(comparison)
+        with st.expander("Точные изменения по пунктам"):
+            for title, changes in (("Создано", comparison.added), ("Изменено", comparison.modified),
+                                   ("Сохранено без изменений", comparison.unchanged), ("Удалено", comparison.removed)):
+                st.markdown(f"**{title} — {len(changes)}**")
+                for item in changes:
+                    clause = item.after or item.before
+                    if clause:
+                        st.markdown(f"- Пункт {item.clause_id}: {clause.text}")
+
+    with loss_tab:
+        st.subheader("Сигналы о возможной потере функций")
+        loss_findings = [finding for finding in findings if finding.kind == "потенциальная потеря функции"]
+        for change in comparison.removed:
+            if change.before:
+                st.error(f"ПУНКТ УДАЛЁН · требуется проверить перенос функции · {change.clause_id}\n\n{change.before.text}")
+        for finding in loss_findings:
+            st.error(f"{risk_label(finding.confidence)} · {finding.title}\n\n{finding.explanation}")
+            for citation in finding.citations:
+                st.caption(f"Источник: редакция {citation.document_label}, пункт {citation.clause_id} — «{citation.quote}»")
+        if not comparison.removed and not loss_findings:
+            st.success("Явных удалённых пунктов или подтверждённых AI-сигналов потери нет.")
+        st.caption("Удаление пункта само по себе не доказывает потерю функции: она могла быть перенесена или объединена.")
+
+    with duplicate_tab:
+        st.subheader("Возможное дублирование и пересечение ответственности")
+        overlap_findings = [finding for finding in findings if finding.kind in (
+            "потенциальное дублирование", "перераспределение ответственности")]
+        if overlap_findings:
+            for finding in overlap_findings:
+                st.warning(f"{finding.title} · {finding.confidence} уверенность\n\n{finding.explanation}")
                 for citation in finding.citations:
-                    st.markdown(f"**{citation.document_label}, пункт {citation.clause_id}:** {citation.quote}")
-    st.header("Точные изменения")
-    for heading, items in (("Добавленные пункты", comparison.added),
-                           ("Удалённые пункты", comparison.removed),
-                           ("Изменённые пункты", comparison.modified)):
-        with st.expander(f"{heading} · {len(items)}", expanded=bool(items)):
-            for item in items:
-                st.markdown(f"**Пункт {item.clause_id}**")
-                if item.before:
-                    st.markdown(f"До ({old_name}): {item.before.text}")
-                if item.after:
-                    st.markdown(f"После ({new_name}): {item.after.text}")
-    md = report_as_markdown(comparison, findings, old_name, new_name)
-    st.download_button("Скачать отчёт Markdown", md, "teren-oi-report.md", "text/markdown")
-    st.download_button("Скачать данные JSON", report_as_json(comparison, findings, old_name, new_name),
-                       "teren-oi-report.json", "application/json")
+                    st.caption(f"Источник: редакция {citation.document_label}, пункт {citation.clause_id} — «{citation.quote}»")
+        elif not os.getenv("OPENAI_API_KEY") or not use_ai:
+            st.info("Включите AI-анализ и задайте OPENAI_API_KEY, чтобы искать смысловое дублирование. Точный diff не делает выводов о конфликте функций.")
+        else:
+            st.success("AI не обнаружил обоснованных сигналов дублирования или пересечения ответственности.")
+        st.markdown("#### Изменённые фрагменты для ручной сверки")
+        for item in comparison.modified:
+            with st.expander(f"Пункт {item.clause_id}"):
+                st.markdown(f"**До:** {item.before.text if item.before else '—'}")
+                st.markdown(f"**После:** {item.after.text if item.after else '—'}")
+
+    with mapping_tab:
+        st.subheader("Матрица сопоставления пунктов")
+        rows = []
+        for status, changes in (("Создано", comparison.added), ("Удалено", comparison.removed),
+                                ("Изменено", comparison.modified), ("Сохранено", comparison.unchanged)):
+            for item in changes:
+                rows.append({"Статус": status, "Пункт": item.clause_id,
+                             "Старая редакция": item.before.text if item.before else "—",
+                             "Новая редакция": item.after.text if item.after else "—"})
+        st.dataframe(rows, use_container_width=True, hide_index=True,
+                     column_config={"Статус": st.column_config.TextColumn("Статус", width="small"),
+                                    "Пункт": st.column_config.TextColumn("Пункт", width="small"),
+                                    "Старая редакция": st.column_config.TextColumn("Старая редакция", width="large"),
+                                    "Новая редакция": st.column_config.TextColumn("Новая редакция", width="large")})
+
+    with export_tab:
+        st.subheader("Скачать результат")
+        markdown_report = report_as_markdown(comparison, findings, old_name, new_name)
+        json_report = report_as_json(comparison, findings, old_name, new_name)
+        left, right = st.columns(2)
+        left.download_button("Скачать заключение Markdown", markdown_report, "teren-oi-zaklyuchenie.md", "text/markdown", use_container_width=True)
+        right.download_button("Скачать полный diff JSON", json_report, "teren-oi-diff.json", "application/json", use_container_width=True)
+        st.markdown("#### Предпросмотр заключения")
+        st.markdown(markdown_report)
+else:
+    st.markdown("### Рабочий сценарий")
+    st.write("1. Загрузите две редакции или вставьте текст слева и справа.  2. Нажмите **Сравнить редакции**.  3. Проверьте источники в матрице и скачайте заключение.")
