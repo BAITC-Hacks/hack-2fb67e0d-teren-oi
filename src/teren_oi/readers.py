@@ -1,0 +1,182 @@
+from __future__ import annotations
+
+import re
+from collections.abc import Iterable
+from io import BytesIO
+from pathlib import Path
+from typing import Any
+from zipfile import BadZipFile
+
+import pymupdf
+from openpyxl import load_workbook
+from openpyxl.utils.exceptions import InvalidFileException
+
+from .docx_reader import DocumentReadError, read_docx
+from .models import SourceDocument
+from .parsers import TextBlock, compact_text, is_standalone_clause_id, parse_blocks
+
+SUPPORTED_EXTENSIONS = frozenset({".docx", ".pdf", ".xlsx", ".txt"})
+_SIMPLE_SHEET_NAME_RE = re.compile(r"^[A-Za-zА-Яа-яЁё_][\wА-Яа-яЁё.-]*$")
+
+
+def _validate_input(data: bytes, name: str, extension: str) -> None:
+    if Path(name).suffix.lower() != extension:
+        raise DocumentReadError(f"Файл «{name}» не имеет расширение {extension}.")
+    if not data:
+        raise DocumentReadError(f"Файл «{name}» пустой.")
+
+
+def read_pdf(data: bytes, name: str) -> SourceDocument:
+    """Read text-layer PDF blocks with page-level source locations.
+
+    OCR is intentionally outside the MVP. A PDF with no extractable text therefore
+    produces an actionable error instead of an empty or fabricated document.
+    """
+
+    _validate_input(data, name, ".pdf")
+    blocks: list[TextBlock] = []
+    try:
+        with pymupdf.open(stream=data, filetype="pdf") as document:
+            for page_number, page in enumerate(document, start=1):
+                for fallback_number, raw_block in enumerate(
+                    page.get_text("blocks", sort=True), start=1
+                ):
+                    if len(raw_block) > 6 and raw_block[6] != 0:
+                        continue
+                    text = str(raw_block[4]).strip()
+                    if not compact_text(text):
+                        continue
+                    block_number = int(raw_block[5]) + 1 if len(raw_block) > 5 else fallback_number
+                    blocks.append(
+                        TextBlock(
+                            text=text,
+                            location=f"page {page_number} / block {block_number}",
+                        )
+                    )
+    except (
+        pymupdf.FileDataError,
+        pymupdf.EmptyFileError,
+        RuntimeError,
+        ValueError,
+        OSError,
+    ) as exc:
+        raise DocumentReadError(
+            f"Не удалось прочитать «{name}». Проверьте, что файл является корректным PDF."
+        ) from exc
+
+    if not blocks:
+        raise DocumentReadError(
+            f"В «{name}» не найден извлекаемый текст. OCR is not supported in the MVP."
+        )
+    return parse_blocks(blocks, name)
+
+
+def _sheet_reference(sheet_name: str, coordinate: str) -> str:
+    if _SIMPLE_SHEET_NAME_RE.fullmatch(sheet_name):
+        return f"{sheet_name}!{coordinate}"
+    escaped = sheet_name.replace("'", "''")
+    return f"'{escaped}'!{coordinate}"
+
+
+def _xlsx_row_blocks(sheet: Any, row: Iterable[Any]) -> list[TextBlock]:
+    cells = [
+        (cell.coordinate, compact_text(cell.value))
+        for cell in row
+        if cell.value is not None and compact_text(cell.value)
+    ]
+    blocks: list[TextBlock] = []
+    index = 0
+    while index < len(cells):
+        coordinate, text = cells[index]
+        if is_standalone_clause_id(text) and index + 1 < len(cells):
+            end = index + 1
+            while end + 1 < len(cells) and not is_standalone_clause_id(cells[end + 1][1]):
+                end += 1
+            body = " | ".join(value for _, value in cells[index + 1 : end + 1])
+            start_ref = _sheet_reference(sheet.title, coordinate)
+            blocks.append(
+                TextBlock(
+                    text=f"{text} {body}",
+                    location=f"{start_ref}:{cells[end][0]}",
+                )
+            )
+            index = end + 1
+            continue
+
+        blocks.append(
+            TextBlock(
+                text=text,
+                location=_sheet_reference(sheet.title, coordinate),
+            )
+        )
+        index += 1
+    return blocks
+
+
+def read_xlsx(data: bytes, name: str) -> SourceDocument:
+    """Read visible cell values in workbook, sheet, row and column order."""
+
+    _validate_input(data, name, ".xlsx")
+    workbook = None
+    try:
+        workbook = load_workbook(BytesIO(data), read_only=True, data_only=False)
+        blocks = [
+            block
+            for sheet in workbook.worksheets
+            for row in sheet.iter_rows()
+            for block in _xlsx_row_blocks(sheet, row)
+        ]
+    except (BadZipFile, InvalidFileException, KeyError, ValueError, OSError) as exc:
+        raise DocumentReadError(
+            f"Не удалось прочитать «{name}». Проверьте, что файл является корректным XLSX."
+        ) from exc
+    finally:
+        if workbook is not None:
+            workbook.close()
+
+    if not blocks:
+        raise DocumentReadError(f"В «{name}» не найдены заполненные ячейки.")
+    return parse_blocks(blocks, name)
+
+
+def read_txt(data: bytes, name: str) -> SourceDocument:
+    _validate_input(data, name, ".txt")
+    text: str | None = None
+    for encoding in ("utf-8-sig", "cp1251"):
+        try:
+            text = data.decode(encoding)
+            break
+        except UnicodeDecodeError:
+            continue
+    if text is None:
+        raise DocumentReadError(
+            f"Не удалось прочитать «{name}». Поддерживаются кодировки UTF-8 и Windows-1251."
+        )
+
+    blocks = [
+        TextBlock(line, f"line {line_number}")
+        for line_number, line in enumerate(text.splitlines(), start=1)
+        if compact_text(line)
+    ]
+    if not blocks:
+        raise DocumentReadError(f"В «{name}» не найден текст.")
+    return parse_blocks(blocks, name)
+
+
+def read_document(data: bytes, name: str) -> SourceDocument:
+    """Dispatch a supported upload without changing the shared ``SourceDocument`` API."""
+
+    extension = Path(name).suffix.lower()
+    readers = {
+        ".docx": read_docx,
+        ".pdf": read_pdf,
+        ".xlsx": read_xlsx,
+        ".txt": read_txt,
+    }
+    reader = readers.get(extension)
+    if reader is None:
+        supported = ", ".join(sorted(SUPPORTED_EXTENSIONS))
+        raise DocumentReadError(
+            f"Формат файла «{name}» не поддерживается. Поддерживаемые форматы: {supported}."
+        )
+    return reader(data, name)
