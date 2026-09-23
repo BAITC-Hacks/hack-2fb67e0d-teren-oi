@@ -27,7 +27,7 @@ from .evidence import resolve_citation, validated_findings
 from .docx_reader import DocumentReadError
 from .document_safety import validate_text
 from .export_formats import MAX_REPORT_LENGTH, export_report
-from .models import Clause, Comparison, Finding, SourceDocument
+from .models import Clause, Comparison, Finding, FunctionMapping, SourceDocument
 from .parsers import TextBlock, parse_blocks
 from .readers import SUPPORTED_EXTENSIONS, read_document
 from .report import escape_markdown, report_as_markdown
@@ -295,6 +295,26 @@ def _finding_payload(finding: Finding, comparison: Comparison) -> dict[str, obje
     return payload
 
 
+def _mapped_old_clauses(
+    comparison: Comparison,
+    mappings: list[FunctionMapping],
+) -> set[Clause]:
+    """Return exact old clause occurrences covered by validated non-lost mappings."""
+    resolved_old: set[Clause] = set()
+    for mapping in mappings:
+        if mapping.status not in {"retained", "changed", "reassigned"}:
+            continue
+        resolved = [resolve_citation(comparison, citation) for citation in mapping.citations]
+        if not resolved or any(clause is None for clause in resolved):
+            continue
+        resolved_old.update(
+            clause
+            for citation, clause in zip(mapping.citations, resolved)
+            if citation.document_label == "до" and clause is not None
+        )
+    return resolved_old
+
+
 def _document_coverage(document: SourceDocument) -> dict[str, object]:
     return {
         "clauses": len(document.clauses),
@@ -427,7 +447,12 @@ async def analyze(
                     for finding in verified_ai if finding.kind == "потенциальная потеря функции"
                     for citation in finding.citations if citation.document_label == "до"
                 }
-                findings = [item for item in findings if resolve_citation(comparison, item.citations[0]) not in explained_losses]
+                explained_losses.discard(None)
+                explained_losses.update(_mapped_old_clauses(comparison, mappings))
+                findings = [
+                    item for item in findings
+                    if resolve_citation(comparison, item.citations[0]) not in explained_losses
+                ]
                 origins = ["local"] * len(findings) + ["ai"] * len(verified_ai)
                 findings.extend(verified_ai)
                 if analysis.called:
