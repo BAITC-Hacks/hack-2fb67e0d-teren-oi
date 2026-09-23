@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { ArrowDownToLine, CheckCircle2, ChevronDown, CircleAlert, FileText, FileType2, FolderOpen, Layers3, Plus, ShieldCheck } from 'lucide-react'
 import type { AnalysisResponse, ClauseChange, Finding, Unit } from '../types'
+import AiSummary from './AiSummary'
 
 const statusLabels: Record<string, string> = {
   added: 'Добавлено', removed: 'Удалено', modified: 'Изменено', unchanged: 'Без изменений',
@@ -164,6 +165,7 @@ export default function ResultsView({ result, aiUsed, onRestart, onExport, expor
       </div>
       {result.ai_error && <div className="ai-warning" role="status"><CircleAlert size={18} aria-hidden="true" /><span><strong>Локальное сравнение готово, но AI-проверка не завершилась.</strong> {result.ai_error}</span></div>}
       {result.warnings?.map((warning, index) => <div className="ai-warning" role="status" key={`${warning}-${index}`}><CircleAlert size={18} aria-hidden="true" /><span>{warning}</span></div>)}
+      <AiSummary result={result} aiUsed={aiUsed} />
       <div className="metric-grid">
         <MetricCard label="Изменено подразделений" value={result.summary.units_changed} tone="blue" footnote="Структурные изменения" />
         <MetricCard label="Потенциальные потери" value={result.summary.loss_count} tone="red" footnote="Требуют проверки" />
