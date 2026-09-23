@@ -15,6 +15,8 @@ export interface Summary {
   units_changed: number
   duplicate_count: number
   loss_count: number
+  ai_loss_count?: number | null
+  ai_duplicate_count?: number | null
 }
 
 export interface ClauseChange {
@@ -35,6 +37,25 @@ export interface Unit {
   status: string
   change_ids: string[]
   clause_ids: string[]
+  origin?: 'ai' | 'local'
+  citations?: Citation[]
+}
+
+export interface DepartmentChange {
+  name_before: string | null
+  name_after: string | null
+  status: 'created' | 'retained' | 'reorganized' | 'removed'
+  citations: Citation[]
+}
+
+export interface FunctionMapping {
+  old_function: string
+  new_function: string | null
+  old_department: string | null
+  new_department: string | null
+  status: 'retained' | 'changed' | 'reassigned' | 'lost'
+  confidence: string
+  citations: Citation[]
 }
 
 export interface Citation {
@@ -83,6 +104,9 @@ export interface AnalysisResponse {
   changes: ClauseChange[]
   units: Unit[]
   findings: Finding[]
+  department_changes?: DepartmentChange[]
+  function_mappings?: FunctionMapping[]
+  ai_summary?: string | null
   report_markdown: string
   source_names: { before: string; after: string }
   ai_error?: string | null

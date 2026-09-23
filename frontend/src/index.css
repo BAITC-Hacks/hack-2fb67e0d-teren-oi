@@ -484,3 +484,15 @@ h1, h2, h3, h4, p { margin-top: 0; }
 @media (prefers-reduced-motion: reduce) {
   .button:not(:disabled):hover, .button:not(:disabled):active, .metric-card:hover, .finding-card:hover, .document-panel:hover, .dropzone:hover, .demo-button:hover, .demo-button:active { transform: none; }
 }
+.semantic-panel { padding: 24px; min-width: 0; }
+.results-view .metric-grid { grid-template-columns: repeat(auto-fit, minmax(min(100%, 180px), 1fr)); }
+.semantic-panel h4 { margin: 20px 0 12px; }
+.semantic-departments { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)); gap: 16px; }
+.semantic-department { padding: 16px; border: 1px solid var(--border); border-radius: 12px; overflow-wrap: anywhere; }
+.semantic-table { min-width: 700px; }
+.semantic-table td { width: 33.33%; overflow-wrap: anywhere; }
+.semantic-table td p { margin: 0 0 8px; }
+.semantic-evidence { margin-top: 12px; }
+.semantic-evidence summary { cursor: pointer; min-height: 44px; display: list-item; padding: 10px 0; }
+.semantic-evidence blockquote { margin: 8px 0; padding: 12px; border-left: 3px solid #2563eb; overflow-wrap: anywhere; }
+@media (max-width: 480px) { .semantic-panel { padding: 16px; } }

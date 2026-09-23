@@ -201,7 +201,7 @@ def report_as_markdown(
         for change in changes:
             _append_change(lines, change)
 
-    lines.extend(["## Function Mapping / Сопоставление функций", ""])
+    lines.extend(["## Function Mapping / Дополнительные замечания о перераспределении ответственности", ""])
     _append_findings(lines, mappings, origins)
 
     lines.extend(["## Potential Lost Functions / Потенциально потерянные функции", ""])

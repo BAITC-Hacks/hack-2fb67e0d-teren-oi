@@ -37,10 +37,11 @@ export default function AiSummary({ result, onInspect }: { result: AnalysisRespo
           : inactiveDescriptions[ai.status as Exclude<AiAnalysis['status'], 'succeeded'>]}</p>
         {ai.error && <p className="ai-summary__error" role="status">{ai.error}</p>}
         {succeeded && <>
-          <p className="ai-summary__provenance">{ai.model} · Сводка собрана сервером из выводов модели с проверенными цитатами. Смысл выводов требует оценки эксперта.</p>
+          <p className="ai-summary__provenance">{ai.model} · Сводка собрана сервером из результатов модели с проверенными цитатами. Смысл выводов требует оценки эксперта.</p>
           {highlights.length > 0 && <ul className="ai-summary__highlights">{highlights.map((finding) => <li key={finding.id}>
             <button type="button" onClick={() => onInspect(finding.id)} className="ai-summary__finding"><span>{finding.title}</span><ArrowDownRight size={17} aria-hidden="true" /><small>{finding.explanation}</small><span className="ai-summary__source-link">Открыть цитаты · {finding.citations.length}</span></button>
           </li>)}</ul>}
+          {!!(result.department_changes?.length || result.function_mappings?.length) && <p><a href="#semantic" className="clause-link">Открыть оценки подразделений и карту функций →</a></p>}
           <p className={`ai-coverage ${partial ? 'ai-coverage--partial' : ''}`}>
             Передано ИИ: <strong>{ai.coverage.included_clauses} из {ai.coverage.total_clauses} фрагментов</strong>
             {ai.coverage.omitted_clauses > 0 && ` · не передано ${ai.coverage.omitted_clauses}`}

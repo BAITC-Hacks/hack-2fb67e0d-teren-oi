@@ -21,7 +21,7 @@ from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from .analyzer import AnalysisError, analyze_with_metadata, evidence_coverage, evidence_omissions
-from .diff import compare_documents
+from .diff import compare_documents, validate_analysis_response
 from .evidence import resolve_citation, validated_findings
 from .docx_reader import DocumentReadError
 from .export_formats import export_report
@@ -30,6 +30,7 @@ from .parsers import TextBlock, parse_blocks
 from .readers import SUPPORTED_EXTENSIONS, read_document
 from .report import escape_markdown, report_as_markdown
 from .report_store import ReportStore
+from .semantic_view import evidence_payload, semantic_units, semantic_report
 
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
@@ -311,8 +312,10 @@ def _report_context(ai: dict, coverage: dict, summary: dict, warnings: list[str]
     if ai["summary"]:
         lines.extend(["Сводка составлена приложением по проверенным выводам модели:", str(ai["summary"]), ""])
     lines.extend([
-        f"Потенциальные потери: {summary['loss_count']}; возможные дубли: {summary['duplicate_count']}. "
-        f"Подразделений с изменениями по текстовым признакам: {summary['units_changed']}.", "",
+        f"Удалённых пунктов по точному сравнению: {summary['removed']}. "
+        f"Возможные потери функций по ИИ: {summary['ai_loss_count'] if summary['ai_loss_count'] is not None else 'не проверено'}; "
+        f"возможные дубли по ИИ: {summary['ai_duplicate_count'] if summary['ai_duplicate_count'] is not None else 'не проверено'}. "
+        f"Подразделений с изменениями: {summary['units_changed']} (оценки ИИ при наличии, иначе текстовые признаки).", "",
         "## Охват исходных документов", "",
         f"Пунктов до: {coverage['before']['clauses']}; после: {coverage['after']['clauses']}.", "",
     ])
@@ -386,6 +389,8 @@ async def analyze(
         "coverage": evidence_coverage(comparison), "rejected_findings": 0,
         "omitted_refs": [], "truncated_refs": [],
     }
+    departments = []
+    mappings = []
     if use_ai:
         if not os.getenv("OPENAI_API_KEY", "").strip():
             ai["status"] = "unavailable"
@@ -398,6 +403,16 @@ async def analyze(
             else:
                 ai["status"] = "succeeded" if analysis.called else "skipped"
                 ai["coverage"] = analysis.coverage
+                if analysis.called and analysis.structured is not None:
+                    # Reuse the validated structured result of the SAME call; keep
+                    # its metadata and the legacy findings adapter compatible.
+                    structured = validate_analysis_response(
+                        analysis.structured, comparison,
+                        before_complete=bool(analysis.coverage.get("before_complete")),
+                        after_complete=bool(analysis.coverage.get("after_complete")),
+                    )
+                    departments = structured.department_changes
+                    mappings = structured.function_mappings
                 verified_ai = [item for item, _ in validated_findings(comparison, analysis.findings)]
                 ai["rejected_findings"] = analysis.rejected_findings + len(analysis.findings) - len(verified_ai)
                 explained_losses = {
@@ -419,14 +434,27 @@ async def analyze(
                     )
                 if ai["rejected_findings"]:
                     warnings.append(f"Не показаны выводы модели, не прошедшие проверку цитат, редакций или полноты контекста: {ai['rejected_findings']}.")
-    units = _units(comparison)
+    units = semantic_units(_units(comparison), departments, comparison)
+    department_payloads = [evidence_payload(item, comparison) for item in departments]
+    mapping_payloads = [evidence_payload(item, comparison) for item in mappings]
+    if ai["status"] == "succeeded":
+        ai["summary"] = (
+            f"Результаты модели с проверенными цитатами: замечаний — {sum(origin == 'ai' for origin in origins)}; "
+            f"оценок подразделений — {len(departments)}; сопоставлений функций: {len(mappings)}. "
+            "Смысловую корректность оценок следует проверить по источникам; отсутствие результатов не доказывает отсутствие рисков."
+        )
     duplicate_count = sum(item.kind == "потенциальное дублирование" for item in findings)
     loss_count = sum(item.kind == "потенциальная потеря функции" for item in findings)
+    ai_loss_count = sum(item.kind == "потенциальная потеря функции" and origin == "ai"
+                        for item, origin in zip(findings, origins)) if ai["status"] == "succeeded" else None
+    ai_duplicate_count = sum(item.kind == "потенциальное дублирование" and origin == "ai"
+                             for item, origin in zip(findings, origins)) if ai["status"] == "succeeded" else None
     summary = {
         "added": len(comparison.added), "removed": len(comparison.removed),
         "modified": len(comparison.modified), "unchanged": len(comparison.unchanged),
         "units_changed": sum(unit["status"] != "retained" for unit in units),
-        "duplicate_count": duplicate_count, "loss_count": loss_count,
+        "duplicate_count": duplicate_count, "loss_count": ai_loss_count if ai_loss_count is not None else loss_count,
+        "ai_loss_count": ai_loss_count, "ai_duplicate_count": ai_duplicate_count,
     }
     finding_payloads = []
     for index, (finding, origin) in enumerate(zip(findings, origins), 1):
@@ -436,7 +464,8 @@ async def analyze(
             ai["finding_ids"].append(payload["id"])
     report_markdown = await to_thread(
         report_as_markdown, comparison, findings, old_document.name, new_document.name,
-        finding_origins=origins, context=_report_context(ai, coverage, summary, warnings),
+        finding_origins=origins, context=_report_context(ai, coverage, summary, warnings)
+        + semantic_report(department_payloads, mapping_payloads),
     )
     if len(report_markdown) > MAX_REPORT_CHARS:
         raise ApiProblem(413, "REPORT_TOO_LARGE", "Итоговый отчёт превышает допустимый размер.")
@@ -446,6 +475,9 @@ async def analyze(
         "changes": _change_payload(comparison),
         "units": units,
         "findings": finding_payloads,
+        "department_changes": department_payloads,
+        "function_mappings": mapping_payloads,
+        "ai_summary": ai["summary"],
         "report_markdown": report_markdown,
         "source_names": {"before": old_document.name, "after": new_document.name},
         "ai": ai,

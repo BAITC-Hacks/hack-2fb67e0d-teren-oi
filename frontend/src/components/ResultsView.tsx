@@ -4,6 +4,7 @@ import { AnimatePresence, motion, useReducedMotion } from 'framer-motion'
 import { ArrowDownToLine, ChevronDown, CircleAlert, FileText, FileType2, FolderOpen, Layers3, Plus, ShieldCheck } from 'lucide-react'
 import type { AnalysisResponse, ClauseChange, Finding, Unit } from '../types'
 import AiSummary, { aiStatusLabels } from './AiSummary'
+import SemanticAnalysis from './SemanticAnalysis'
 
 const statusLabels: Record<string, string> = {
   added: 'Добавлено', removed: 'Удалено', modified: 'Изменено', unchanged: 'Без изменений',
@@ -28,11 +29,11 @@ function Badge({ tone, children }: { tone: 'green' | 'amber' | 'red' | 'blue' | 
   return <span className={`badge badge--${tone}`}>{children}</span>
 }
 
-function MetricCard({ label, value, tone, footnote }: { label: string; value: number; tone: string; footnote: string }) {
+function MetricCard({ label, value, tone, footnote }: { label: string; value: number | null; tone: string; footnote: string }) {
   return (
     <div className={`metric-card metric-card--${tone}`}>
       <span className="metric-card__label">{label}</span>
-      <strong>{value.toLocaleString('ru-RU')}</strong>
+      <strong>{value === null ? '—' : value.toLocaleString('ru-RU')}</strong>
       <span className="metric-card__footnote"><span className="metric-card__dot" />{footnote}</span>
     </div>
   )
@@ -41,7 +42,7 @@ function UnitsPanel({ units, active, onSelect }: { units: Unit[]; active: string
   return (
     <section className="surface units-panel" aria-labelledby="units-heading">
       <div className="section-heading"><div><span className="eyebrow">СТРУКТУРА</span><h3 id="units-heading">Подразделения</h3></div><span className="count-pill">{units.length}</span></div>
-      <p className="panel-intro">Статусы оценены по упоминаниям в пунктах и требуют проверки. Выберите подразделение для фильтрации карты изменений.</p>
+      <p className="panel-intro">При наличии используются оценки ИИ с цитатами, иначе — текстовые признаки. Все статусы требуют проверки. Выберите подразделение для фильтрации точной карты.</p>
       <div className="unit-list">
         <button type="button" className={`unit-item ${active === null ? 'is-selected' : ''}`} onClick={() => onSelect(null)} aria-pressed={active === null}>
           <span className="unit-item__symbol"><Layers3 size={16} /></span><span className="unit-item__name">Все подразделения</span><span className="unit-item__arrow">→</span>
@@ -49,7 +50,7 @@ function UnitsPanel({ units, active, onSelect }: { units: Unit[]; active: string
         {units.map((unit, index) => (
           <button type="button" key={`${unit.name}-${index}`} className={`unit-item ${active === unit.name ? 'is-selected' : ''}`} onClick={() => onSelect(unit.name)} aria-pressed={active === unit.name}>
             <span className={`unit-item__symbol unit-item__symbol--${statusTone(unit.status)}`}><FolderOpen size={16} /></span>
-            <span className="unit-item__name">{unit.name}</span>
+            <span className="unit-item__name">{unit.name}<small className="mapping-match">{unit.origin === 'ai' ? 'Оценка ИИ · источники выше' : 'По упоминаниям'}</small></span>
             <Badge tone={statusTone(unit.status)}>{statusLabels[unit.status] || unit.status}</Badge>
           </button>
         ))}
@@ -187,10 +188,11 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
       </div>
       <AiSummary result={result} onInspect={inspectFinding} />
       <div className="metric-grid">
-        <MetricCard label="Изменено подразделений" value={result.summary.units_changed} tone="blue" footnote="По упоминаниям в пунктах" />
-        <MetricCard label="Потенциальные потери" value={result.summary.loss_count} tone="red" footnote="Требуют проверки" />
-        <MetricCard label="Возможные дубли" value={result.summary.duplicate_count} tone="amber" footnote={aiStatusLabels[result.ai.status]} />
-        <MetricCard label="Переформулировано" value={result.summary.modified} tone="green" footnote="Сопоставленных пунктов" />
+        <MetricCard label="Изменено подразделений" value={result.summary.units_changed} tone="blue" footnote="Оценки ИИ / текстовые признаки" />
+        <MetricCard label="Потери функций · ИИ" value={result.summary.ai_loss_count ?? null} tone="red" footnote={result.summary.ai_loss_count == null ? 'Не проверено' : 'Возможные · требуют проверки'} />
+        <MetricCard label="Возможные дубли · ИИ" value={result.summary.ai_duplicate_count ?? null} tone="amber" footnote={result.summary.ai_duplicate_count == null ? 'Не проверено' : aiStatusLabels[result.ai.status]} />
+        <MetricCard label="Удалённые пункты" value={result.summary.removed} tone="green" footnote="Точное сравнение · не потеря функции" />
+        <MetricCard label="Переформулировано" value={result.summary.modified} tone="blue" footnote="Сопоставленных пунктов" />
       </div>
       <nav className="results-nav" aria-label="Разделы заключения"><a href="#findings">Замечания <span>{result.findings.length}</span></a><a href="#mapping">Карта изменений</a><a href="#export">Скачать отчёт</a><a href="#coverage">Охват и ограничения</a></nav>
       <section className="findings-section" id="findings" aria-labelledby="findings-heading">
@@ -202,6 +204,7 @@ export default function ResultsView({ result, onRestart, onExport, exporting, ex
           {visibleFindings < result.findings.length && <button type="button" className="button button--secondary" onClick={() => setVisibleFindings((count) => count + 8)}>Показать ещё</button>}
         </> : <div className="all-clear"><FileText size={23} aria-hidden="true" /><div><strong>Замечаний с источниками нет</strong><span>Это не гарантирует отсутствие рисков. Проверьте карту изменений и охват анализа ниже.</span></div></div>}
       </section>
+      <SemanticAnalysis result={result} />
       <div className="results-layout">
         <UnitsPanel units={result.units} active={activeUnit} onSelect={setActiveUnit} />
         <MappingTable changes={result.changes} units={result.units} activeUnit={activeUnit} />
